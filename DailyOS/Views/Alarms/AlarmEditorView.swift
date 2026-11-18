@@ -1,0 +1,317 @@
+import SwiftUI
+import SwiftData
+
+struct AlarmEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+
+    let alarmToEdit: AlarmItem?
+
+    @State private var selectedTime: Date = Date()
+    @State private var label: String = "Morning Alarm"
+    @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6]
+    @State private var selectedTone: AlarmTone = .classicPulse
+    @State private var selectedMission: MissionType = .math
+    @State private var stepGoal: Int = 50
+    @State private var mathDifficulty: MathDifficulty = .medium
+    @State private var mathProblemCount: Int = 3
+    @State private var customTargetBarcode: String = ""
+    @State private var showingBarcodeScannerSheet: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                // Time Wheel Picker
+                Section {
+                    DatePicker(
+                        "Alarm Time",
+                        selection: $selectedTime,
+                        displayedComponents: .hourAndMinute
+                    )
+                    .datePickerStyle(.wheel)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+
+                // Label & Repeat Schedule
+                Section("Label & Schedule") {
+                    TextField("Alarm Label", text: $label)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("Repeat Days")
+                                .font(.subheadline)
+                            Spacer()
+                            Text(Weekday.formatSummary(for: repeatDays))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.indigo)
+                        }
+
+                        HStack(spacing: 6) {
+                            ForEach(Weekday.allCases) { day in
+                                let isSelected = repeatDays.contains(day.rawValue)
+                                Button {
+                                    if isSelected {
+                                        repeatDays.remove(day.rawValue)
+                                    } else {
+                                        repeatDays.insert(day.rawValue)
+                                    }
+                                } label: {
+                                    Text(day.shortName)
+                                        .font(.caption.weight(.bold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 8)
+                                        .background(
+                                            isSelected ? Color.indigo : Color.secondary.opacity(0.15),
+                                            in: RoundedRectangle(cornerRadius: 8)
+                                        )
+                                        .foregroundStyle(isSelected ? .white : .primary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                // Alarm Tone Selection
+                Section("Alarm Tone & Audio Engine") {
+                    Picker("Alarm Tone", selection: $selectedTone) {
+                        ForEach(AlarmTone.allCases) { tone in
+                            Text(tone.displayName).tag(tone)
+                        }
+                    }
+
+                    Button {
+                        AlarmEngine.shared.previewAlarmTone(selectedTone)
+                    } label: {
+                        Label("Preview Selected Alarm Tone (2.5s)", systemImage: "speaker.wave.2.fill")
+                    }
+                }
+
+                // Dismissal Mission Configuration
+                Section("Dismissal Mission") {
+                    Picker("Mission Type", selection: $selectedMission) {
+                        ForEach(MissionType.allCases) { mission in
+                            Label(mission.displayName, systemImage: mission.iconName)
+                                .tag(mission)
+                        }
+                    }
+
+                    switch selectedMission {
+                    case .none:
+                        Text("Alarm can be dismissed with a single tap on the wake screen.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                    case .steps:
+                        Stepper(
+                            "Target Steps: \(stepGoal)",
+                            value: $stepGoal,
+                            in: 10...500,
+                            step: 10
+                        )
+                        Text("Uses CoreMotion CMPedometer to track live walking steps before the alarm stops.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+
+                    case .qrBarcode:
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Default Registered Code: \(SharedModelContainer.shared.registeredBarcode)")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+
+                            TextField(
+                                "Optional Custom Code Override",
+                                text: $customTargetBarcode
+                            )
+                            .font(.subheadline.monospaced())
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+
+                            Button {
+                                showingBarcodeScannerSheet = true
+                            } label: {
+                                Label("Scan QR / Barcode with Camera", systemImage: "qrcode.viewfinder")
+                            }
+                        }
+
+                    case .math:
+                        Picker("Difficulty", selection: $mathDifficulty) {
+                            ForEach(MathDifficulty.allCases) { diff in
+                                Text(diff.displayName).tag(diff)
+                            }
+                        }
+
+                        Stepper(
+                            "Problems to Solve: \(mathProblemCount)",
+                            value: $mathProblemCount,
+                            in: 1...10
+                        )
+                    }
+                }
+            }
+            .navigationTitle(alarmToEdit == nil ? "New Alarm" : "Edit Alarm")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        AlarmEngine.shared.stopPreview()
+                        dismiss()
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        AlarmEngine.shared.stopPreview()
+                        saveAlarm()
+                        dismiss()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+            .onAppear(perform: loadInitialValues)
+            .onDisappear {
+                AlarmEngine.shared.stopPreview()
+            }
+            .sheet(isPresented: $showingBarcodeScannerSheet) {
+                RegisterBarcodeScannerModal { scannedCode in
+                    customTargetBarcode = scannedCode
+                }
+            }
+        }
+    }
+
+    private func loadInitialValues() {
+        let calendar = Calendar.current
+        if let alarm = alarmToEdit {
+            var comps = calendar.dateComponents([.year, .month, .day], from: Date())
+            comps.hour = alarm.hour
+            comps.minute = alarm.minute
+            selectedTime = calendar.date(from: comps) ?? Date()
+            label = alarm.label
+            repeatDays = alarm.repeatDays
+            selectedTone = alarm.tone
+            selectedMission = alarm.missionType
+            stepGoal = alarm.stepGoal
+            mathDifficulty = alarm.mathDifficulty
+            mathProblemCount = alarm.mathProblemCount
+            customTargetBarcode = alarm.customTargetBarcode
+        } else {
+            var comps = calendar.dateComponents([.year, .month, .day], from: Date())
+            comps.hour = 7
+            comps.minute = 0
+            selectedTime = calendar.date(from: comps) ?? Date()
+        }
+    }
+
+    private func saveAlarm() {
+        let comps = Calendar.current.dateComponents([.hour, .minute], from: selectedTime)
+        let hour = comps.hour ?? 7
+        let minute = comps.minute ?? 0
+        let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? "Alarm"
+            : label.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let alarm = alarmToEdit {
+            alarm.label = cleanLabel
+            alarm.hour = hour
+            alarm.minute = minute
+            alarm.repeatDays = repeatDays
+            alarm.tone = selectedTone
+            alarm.missionType = selectedMission
+            alarm.stepGoal = stepGoal
+            alarm.mathDifficulty = mathDifficulty
+            alarm.mathProblemCount = mathProblemCount
+            alarm.customTargetBarcode = customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
+            alarm.lastTriggeredMinuteKey = ""
+            alarm.isEnabled = true
+        } else {
+            let newAlarm = AlarmItem(
+                label: cleanLabel,
+                hour: hour,
+                minute: minute,
+                isEnabled: true,
+                repeatDays: repeatDays,
+                tone: selectedTone,
+                missionType: selectedMission,
+                stepGoal: stepGoal,
+                mathDifficulty: mathDifficulty,
+                mathProblemCount: mathProblemCount,
+                customTargetBarcode: customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            modelContext.insert(newAlarm)
+        }
+
+        SharedModelContainer.shared.save()
+        AlarmEngine.shared.syncWithAlarms()
+    }
+}
+
+// MARK: - Reusable Live QR/Barcode Registration Scanner Modal
+
+struct RegisterBarcodeScannerModal: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var scannerVM = BarcodeScannerViewModel()
+    let onScanned: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 16) {
+                Text("Aim camera at any QR code or product barcode to register it.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+
+                ZStack {
+                    BarcodeScannerCameraPreview(session: scannerVM.captureSession)
+                        .clipShape(RoundedRectangle(cornerRadius: 18))
+
+                    RoundedRectangle(cornerRadius: 14)
+                        .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
+                        .foregroundStyle(.yellow)
+                        .frame(width: 220, height: 150)
+                }
+                .padding(.horizontal)
+
+                Text(scannerVM.statusText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    scannerVM.toggleTorch()
+                } label: {
+                    Label(
+                        scannerVM.isTorchOn ? "Turn Off Flashlight" : "Turn On Flashlight",
+                        systemImage: scannerVM.isTorchOn ? "flashlight.on.fill" : "flashlight.off.fill"
+                    )
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .padding(.horizontal)
+            }
+            .padding(.vertical)
+            .navigationTitle("Scan Target Code")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") {
+                        scannerVM.stopSession()
+                        dismiss()
+                    }
+                }
+            }
+            .onAppear {
+                scannerVM.onCodeDetected = { code, _ in
+                    scannerVM.stopSession()
+                    onScanned(code)
+                    dismiss()
+                }
+                scannerVM.checkPermissionAndStart()
+            }
+            .onDisappear {
+                scannerVM.stopSession()
+            }
+        }
+    }
+}

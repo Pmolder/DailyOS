@@ -1,0 +1,59 @@
+name: Build Unsigned DailyOS IPA
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+    branches:
+      - main
+      - master
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    name: Build Unsigned iOS IPA (SideStore Compatible)
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen &> /dev/null; then
+            brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Unsigned Release App
+        run: |
+          xcodebuild build \
+            -project DailyOS.xcodeproj \
+            -scheme DailyOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES
+
+      - name: Package Payload into DailyOS.ipa
+        run: |
+          rm -rf Payload DailyOS.ipa
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/DailyOS.app Payload/
+          zip -r9 DailyOS.ipa Payload
+          ls -lh DailyOS.ipa
+
+      - name: Upload DailyOS.ipa Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DailyOS-Unsigned-IPA
+          path: DailyOS.ipa
+          retention-days: 30
