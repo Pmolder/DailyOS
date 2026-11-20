@@ -14,6 +14,7 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         Task { @MainActor in
             NotificationScheduler.shared.registerNotificationCategories()
             AlarmEngine.shared.syncWithAlarms()
+            FocusAccountabilityManager.shared.refreshTodaySchedule()
             DailyOSShortcutsProvider.updateAppShortcutParameters()
         }
         return true
@@ -32,6 +33,12 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
                 if let alarm = alarms.first(where: { $0.id == alarmUUID }),
                    AlarmEngine.shared.activeRingingAlarm == nil {
                     AlarmEngine.shared.triggerAlarm(alarm)
+                }
+            }
+        } else if let type = userInfo["type"] as? String, type == "focus_checkin" {
+            Task { @MainActor in
+                if !FocusAccountabilityManager.shared.isCheckInDue {
+                    FocusAccountabilityManager.shared.triggerCheckInDue(immediateAlarm: false)
                 }
             }
         }
@@ -58,6 +65,7 @@ struct DailyOSApp: App {
         WindowGroup {
             ContentView()
                 .modelContainer(SharedModelContainer.shared.container)
+                .preferredColorScheme(.dark)
         }
     }
 }

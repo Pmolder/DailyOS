@@ -8,17 +8,19 @@ final class SharedModelContainer {
 
     let container: ModelContainer
 
-    private static let seededKey = "com.patrik.dailyos.didSeedInitialData"
+    private static let seededKey = "com.patrik.dailyos.didSeedInitialData.v2"
     static let registeredBarcodeKey = "com.patrik.dailyos.registeredTargetBarcode"
     static let registeredBarcodeLabelKey = "com.patrik.dailyos.registeredTargetBarcodeLabel"
 
     private init() {
         let schema = Schema([
             AlarmItem.self,
-            HabitItem.self
+            HabitItem.self,
+            ManualFocusBlock.self,
+            FocusCheckInLog.self
         ])
         let configuration = ModelConfiguration(
-            "DailyOSLocalStore",
+            "DailyOSLocalStoreV2",
             schema: schema,
             isStoredInMemoryOnly: false,
             allowsSave: true,
@@ -29,7 +31,20 @@ final class SharedModelContainer {
             self.container = try ModelContainer(for: schema, configurations: [configuration])
             seedInitialDataIfNeeded()
         } catch {
-            fatalError("Failed to initialize local SwiftData ModelContainer: \(error.localizedDescription)")
+            // Safe fallback recovery if an incompatible dev SQLite store exists
+            let fallbackConfig = ModelConfiguration(
+                "DailyOSLocalStoreRecovery",
+                schema: schema,
+                isStoredInMemoryOnly: false,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            do {
+                self.container = try ModelContainer(for: schema, configurations: [fallbackConfig])
+                seedInitialDataIfNeeded()
+            } catch {
+                fatalError("Failed to initialize local SwiftData ModelContainer: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -50,10 +65,23 @@ final class SharedModelContainer {
     func fetchHabits() -> [HabitItem] {
         let descriptor = FetchDescriptor<HabitItem>(
             sortBy: [
-                SortDescriptor(\.reminderHour, order: .forward),
-                SortDescriptor(\.reminderMinute, order: .forward),
+                SortDescriptor(\.sortOrder, order: .forward),
                 SortDescriptor(\.createdAt, order: .forward)
             ]
+        )
+        return (try? mainContext.fetch(descriptor)) ?? []
+    }
+
+    func fetchManualFocusBlocks() -> [ManualFocusBlock] {
+        let descriptor = FetchDescriptor<ManualFocusBlock>(
+            sortBy: [SortDescriptor(\.startDate, order: .forward)]
+        )
+        return (try? mainContext.fetch(descriptor)) ?? []
+    }
+
+    func fetchFocusCheckInLogs() -> [FocusCheckInLog] {
+        let descriptor = FetchDescriptor<FocusCheckInLog>(
+            sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
         return (try? mainContext.fetch(descriptor)) ?? []
     }
@@ -123,88 +151,109 @@ final class SharedModelContainer {
     private func seedInitialDataIfNeeded() {
         guard !UserDefaults.standard.bool(forKey: Self.seededKey) else { return }
 
-        let existingAlarms = fetchAlarms()
-        let existingHabits = fetchHabits()
-
-        if existingAlarms.isEmpty {
-            let weekdayMorning = AlarmItem(
-                label: "Morning Wake Up",
+        if fetchAlarms().isEmpty {
+            let pushupWake = AlarmItem(
+                label: "Weekday Nuclear Wake",
                 hour: 7,
                 minute: 0,
                 isEnabled: true,
                 repeatDays: [2, 3, 4, 5, 6],
-                tone: .classicPulse,
-                missionType: .math,
-                stepGoal: 50,
-                mathDifficulty: .medium,
-                mathProblemCount: 3
+                tone: .nuclearSiren,
+                missionType: .pushups,
+                repGoal: 15
             )
-            let workoutAlarm = AlarmItem(
-                label: "Gym & Cardio Walk",
-                hour: 6,
-                minute: 30,
-                isEnabled: false,
-                repeatDays: [2, 4, 6],
-                tone: .digitalSiren,
-                missionType: .steps,
-                stepGoal: 50,
-                mathDifficulty: .easy,
-                mathProblemCount: 3
-            )
-            let bathroomScanAlarm = AlarmItem(
-                label: "No-Snooze Bathroom QR",
-                hour: 7,
-                minute: 15,
+            let squatWake = AlarmItem(
+                label: "Weekend Leg Wake",
+                hour: 8,
+                minute: 0,
                 isEnabled: false,
                 repeatDays: [1, 7],
-                tone: .radarChime,
-                missionType: .qrBarcode,
-                stepGoal: 50,
-                mathDifficulty: .medium,
-                mathProblemCount: 3
+                tone: .nuclearSiren,
+                missionType: .squats,
+                repGoal: 20
             )
-            mainContext.insert(weekdayMorning)
-            mainContext.insert(workoutAlarm)
-            mainContext.insert(bathroomScanAlarm)
+            let qrWake = AlarmItem(
+                label: "Bathroom Barcode Override",
+                hour: 6,
+                minute: 45,
+                isEnabled: false,
+                repeatDays: [2, 3, 4, 5, 6],
+                tone: .digitalSiren,
+                missionType: .qrBarcode,
+                repGoal: 15
+            )
+            mainContext.insert(pushupWake)
+            mainContext.insert(squatWake)
+            mainContext.insert(qrWake)
         }
 
-        if existingHabits.isEmpty {
-            let hydrateHabit = HabitItem(
-                title: "Drink 500ml Water",
-                notes: "Hydrate immediately after dismissing morning alarm",
+        if fetchHabits().isEmpty {
+            let morningWater = HabitItem(
+                title: "Hydrate 500ml Water",
+                notes: "Immediately after wake mission",
                 iconName: "drop.fill",
+                timeOfDay: .morning,
+                sortOrder: 0,
                 reminderEnabled: true,
                 reminderHour: 7,
-                reminderMinute: 15,
-                repeatDays: [1, 2, 3, 4, 5, 6, 7],
-                soundOption: .chimeBell,
-                requiresPhotoProof: false
+                reminderMinute: 15
             )
-            let workoutHabit = HabitItem(
-                title: "Daily Workout / Desk Setup",
-                notes: "Take a live camera snapshot of workout or clean desk",
-                iconName: "figure.strengthtraining.traditional",
+            let morningSunlight = HabitItem(
+                title: "10m Sunlight & Mobility",
+                notes: "No phone scrolling before light exposure",
+                iconName: "sun.max.fill",
+                timeOfDay: .morning,
+                sortOrder: 1,
+                reminderEnabled: false,
+                reminderHour: 7,
+                reminderMinute: 30
+            )
+            let dayDeepWork = HabitItem(
+                title: "Deep Work Block (90m)",
+                notes: "Zero distractions during priority block",
+                iconName: "brain.head.profile",
+                timeOfDay: .day,
+                sortOrder: 0,
                 reminderEnabled: true,
-                reminderHour: 18,
-                reminderMinute: 0,
-                repeatDays: [2, 3, 4, 5, 6],
-                soundOption: .crispPing,
-                requiresPhotoProof: true
+                reminderHour: 13,
+                reminderMinute: 0
             )
-            let readingHabit = HabitItem(
+            let dayWorkout = HabitItem(
+                title: "Strength / Cardio Training",
+                notes: "Hit daily movement target",
+                iconName: "figure.strengthtraining.traditional",
+                timeOfDay: .day,
+                sortOrder: 1,
+                reminderEnabled: false,
+                reminderHour: 17,
+                reminderMinute: 30
+            )
+            let eveningRead = HabitItem(
                 title: "Read 20 Pages",
-                notes: "Evening deep reading session without screens",
+                notes: "Wind down away from blue light",
                 iconName: "book.fill",
+                timeOfDay: .evening,
+                sortOrder: 0,
                 reminderEnabled: true,
                 reminderHour: 21,
-                reminderMinute: 30,
-                repeatDays: [1, 2, 3, 4, 5, 6, 7],
-                soundOption: .zenBowl,
-                requiresPhotoProof: false
+                reminderMinute: 30
             )
-            mainContext.insert(hydrateHabit)
-            mainContext.insert(workoutHabit)
-            mainContext.insert(readingHabit)
+            let eveningPrep = HabitItem(
+                title: "Arm Wake Alarm & Guided Access",
+                notes: "Triple-click side button before sleep",
+                iconName: "lock.shield.fill",
+                timeOfDay: .evening,
+                sortOrder: 1,
+                reminderEnabled: true,
+                reminderHour: 22,
+                reminderMinute: 30
+            )
+            mainContext.insert(morningWater)
+            mainContext.insert(morningSunlight)
+            mainContext.insert(dayDeepWork)
+            mainContext.insert(dayWorkout)
+            mainContext.insert(eveningRead)
+            mainContext.insert(eveningPrep)
         }
 
         save()

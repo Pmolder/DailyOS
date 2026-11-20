@@ -50,7 +50,7 @@ struct HabitEntityQuery: EntityStringQuery {
 struct CompleteHabitIntent: AppIntent {
     static var title: LocalizedStringResource = "Complete Habit"
     static var description = IntentDescription(
-        "Marks a selected DailyOS habit as completed for today and updates your notification queue."
+        "Marks a selected DailyOS habit as completed for today and updates your consistency grid."
     )
     static var openAppWhenRun: Bool = false
 
@@ -84,7 +84,6 @@ struct CompleteHabitIntent: AppIntent {
         }
 
         if targetHabit == nil {
-            // Default to first uncompleted habit scheduled for today, or first habit overall
             targetHabit = allHabits.first(where: { !$0.isCompleted(on: Date()) }) ?? allHabits.first
         }
 
@@ -108,7 +107,7 @@ struct CompleteHabitIntent: AppIntent {
 struct ArmMorningAlarmIntent: AppIntent {
     static var title: LocalizedStringResource = "Arm Morning Alarm"
     static var description = IntentDescription(
-        "Arms your morning alarm in DailyOS, activates the silent background audio keep-alive loop, and queues the 20-notification fallback burst."
+        "Arms your morning nuclear wake alarm in DailyOS, activates the silent background keep-alive loop, and schedules the 20-alert fallback burst."
     )
     static var openAppWhenRun: Bool = true
 
@@ -146,16 +145,14 @@ struct ArmMorningAlarmIntent: AppIntent {
             targetAlarm = morningAlarm
         } else {
             let newAlarm = AlarmItem(
-                label: "Morning Alarm",
+                label: "Nuclear Morning Wake",
                 hour: clampedHour,
                 minute: clampedMinute,
                 isEnabled: true,
                 repeatDays: [2, 3, 4, 5, 6],
-                tone: .classicPulse,
-                missionType: .math,
-                stepGoal: 50,
-                mathDifficulty: .medium,
-                mathProblemCount: 3
+                tone: .nuclearSiren,
+                missionType: .pushups,
+                repGoal: 15
             )
             SharedModelContainer.shared.mainContext.insert(newAlarm)
             targetAlarm = newAlarm
@@ -166,7 +163,7 @@ struct ArmMorningAlarmIntent: AppIntent {
         await NotificationScheduler.shared.rescheduleAll()
 
         return .result(
-            dialog: "Armed '\(targetAlarm.label)' for \(targetAlarm.formattedTime) (\(targetAlarm.missionSummary)). Silent overnight keep-alive and 20-notification burst are active."
+            dialog: "Armed '\(targetAlarm.label)' for \(targetAlarm.formattedTime) (\(targetAlarm.missionSummary)). Silent overnight keep-alive is active."
         )
     }
 }

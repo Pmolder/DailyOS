@@ -1,11 +1,16 @@
 import SwiftUI
 import AVFoundation
-import CoreMotion
-import UserNotifications
+import EventKit
+import UniformTypeIdentifiers
+import UIKit
 
+/// Compact Settings & SideStore Backup sheet accessible from the top bar across all 3 tabs.
 struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+
     @ObservedObject private var alarmEngine = AlarmEngine.shared
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
+    @ObservedObject private var focusManager = FocusAccountabilityManager.shared
 
     @AppStorage(SharedModelContainer.registeredBarcodeKey)
     private var registeredBarcode: String = "DAILYOS-WAKE-QR"
@@ -13,241 +18,293 @@ struct SettingsView: View {
     @AppStorage(SharedModelContainer.registeredBarcodeLabelKey)
     private var registeredBarcodeLabel: String = "Bathroom Mirror QR"
 
+    // Gemini Keychain state
+    @State private var geminiKeyInput: String = ""
+    @State private var revealGeminiKey: Bool = false
+    @State private var offlineFallbackEnabled: Bool = KeychainService.offlineVisionFallbackEnabled
+    @State private var keyStatusMessage: String?
+
+    // Backup Export/Import state
+    @State private var backupStatusMessage: String?
+    @State private var backupStatusIsError: Bool = false
+    @State private var showingFileExporter: Bool = false
+    @State private var showingFileImporter: Bool = false
+    @State private var exportDocument = DailyOSBackupDocument()
+
+    // Barcode Scanner & Permissions
     @State private var showingBarcodeScanner = false
     @State private var cameraAuthStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
-    @State private var showingQueueInspector = false
 
     var body: some View {
         NavigationStack {
             Form {
-                // 1. Registered Target QR / Barcode Section
+                // 1. 1-Tap SideStore JSON Backup & Restore
                 Section {
-                    TextField("Location Label (e.g., Toothpaste / Mirror)", text: $registeredBarcodeLabel)
+                    HStack(spacing: 10) {
+                        Button {
+                            copyBackupToClipboard()
+                        } label: {
+                            Label("Copy JSON", systemImage: "doc.on.clipboard")
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.indigo)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Registered Code Value")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        TextField("Target Barcode / QR Payload", text: $registeredBarcode)
-                            .font(.subheadline.monospaced())
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                        Button {
+                            prepareFileExport()
+                        } label: {
+                            Label("Save File", systemImage: "square.and.arrow.up")
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
                     }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            importBackupFromClipboard()
+                        } label: {
+                            Label("Paste JSON", systemImage: "arrow.down.doc")
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+
+                        Button {
+                            showingFileImporter = true
+                        } label: {
+                            Label("Load File", systemImage: "folder")
+                                .font(.subheadline.weight(.bold))
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if let backupStatusMessage {
+                        Text(backupStatusMessage)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(backupStatusIsError ? .red : .green)
+                    }
+                } header: {
+                    Text("1-Tap JSON Backup (SideStore Protection)")
+                } footer: {
+                    Text("Export all alarms, habits, 12-week heatmap history, and focus logs to Clipboard or Files before weekly SideStore re-installs.")
+                }
+
+                // 2. Gemini API Key (Keychain) for Tab 3 AI Verification
+                Section {
+                    HStack(spacing: 8) {
+                        Group {
+                            if revealGeminiKey {
+                                TextField("AIza... (Gemini API Key)", text: $geminiKeyInput)
+                            } else {
+                                SecureField("AIza... (Gemini API Key)", text: $geminiKeyInput)
+                            }
+                        }
+                        .font(.subheadline.monospaced())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                        Button {
+                            revealGeminiKey.toggle()
+                        } label: {
+                            Image(systemName: revealGeminiKey ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("Save to Keychain") {
+                            let ok = KeychainService.saveGeminiAPIKey(geminiKeyInput)
+                            keyStatusMessage = ok
+                                ? (geminiKeyInput.isEmpty ? "Cleared Gemini API key from Keychain." : "Saved Gemini API key securely in Keychain.")
+                                : "Failed to save key in Keychain."
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+
+                        if KeychainService.hasGeminiAPIKey {
+                            Button("Clear", role: .destructive) {
+                                KeychainService.deleteGeminiAPIKey()
+                                geminiKeyInput = ""
+                                keyStatusMessage = "Gemini API key removed."
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    if let keyStatusMessage {
+                        Text(keyStatusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+
+                    Toggle("Offline / No-Key Verification Fallback", isOn: $offlineFallbackEnabled)
+                        .onChange(of: offlineFallbackEnabled) { _, newValue in
+                            KeychainService.offlineVisionFallbackEnabled = newValue
+                        }
+                } header: {
+                    Text("Gemini 2.5 Flash AI Vision (Tab 3 Focus)")
+                } footer: {
+                    Text("Stored locally in iOS Keychain. Enable Offline Fallback if you want to test the Focus photo check-in loop without a Gemini API key.")
+                }
+
+                // 3. QR / Barcode Dismissal Target Registration
+                Section("Wake QR / Barcode Mission Target") {
+                    TextField("Location Label (e.g., Bathroom Toothpaste)", text: $registeredBarcodeLabel)
+                    TextField("Registered Code Payload", text: $registeredBarcode)
+                        .font(.subheadline.monospaced())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
 
                     Button {
                         showingBarcodeScanner = true
                     } label: {
-                        Label("Scan & Register Target Code with Camera", systemImage: "qrcode.viewfinder")
-                            .fontWeight(.semibold)
-                    }
-                } header: {
-                    Text("QR / Barcode Dismissal Target")
-                } footer: {
-                    Text("Register a physical barcode (e.g., toothpaste tube) or QR code in another room. Alarms using the QR/Barcode Mission require scanning this exact code to stop ringing.")
-                }
-
-                // 2. Quick Mission & Alarm Engine Sandbox
-                Section("Test Dismissal Missions & Audio Engine") {
-                    Button {
-                        triggerSandboxMission(.steps)
-                    } label: {
-                        Label("Test Step Counter Mission (20 Steps)", systemImage: "figure.walk")
-                    }
-
-                    Button {
-                        triggerSandboxMission(.qrBarcode)
-                    } label: {
-                        Label("Test QR / Barcode Scanner Mission", systemImage: "qrcode.viewfinder")
-                    }
-
-                    Button {
-                        triggerSandboxMission(.math)
-                    } label: {
-                        Label("Test Math Challenge Mission (3 Problems)", systemImage: "function")
+                        Label("Scan & Register Target Barcode", systemImage: "qrcode.viewfinder")
+                            .foregroundStyle(.orange)
                     }
                 }
 
-                // 3. 64-Pending-Notification Queue Management
-                Section {
-                    HStack {
-                        Text("Total Queued Notifications")
-                        Spacer()
-                        Text("\(notificationScheduler.totalPendingCount) / \(NotificationScheduler.maxPendingLimit)")
-                            .font(.subheadline.weight(.bold).monospacedDigit())
-                            .foregroundStyle(.indigo)
-                    }
-
-                    HStack {
-                        Text("Alarm Fallback Burst (20x @ 5s)")
-                        Spacer()
-                        Text("\(notificationScheduler.pendingAlarmBurstCount)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-
-                    HStack {
-                        Text("Upcoming Habit Reminders")
-                        Spacer()
-                        Text("\(notificationScheduler.pendingHabitCount)")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-
-                    Button {
-                        Task {
-                            await notificationScheduler.rescheduleAll()
-                        }
-                    } label: {
-                        Label("Rebuild 64-Notification Queue Now", systemImage: "arrow.clockwise")
-                    }
-
-                    if !notificationScheduler.queuedSummaries.isEmpty {
-                        DisclosureGroup("Inspect Queued Notifications (\(notificationScheduler.queuedSummaries.count))", isExpanded: $showingQueueInspector) {
-                            ForEach(notificationScheduler.queuedSummaries.prefix(30)) { item in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    HStack {
-                                        Text(item.title)
-                                            .font(.caption.weight(.semibold))
-                                            .lineLimit(1)
-                                        Spacer()
-                                        Text(item.fireDate.formatted(date: .abbreviated, time: .standard))
-                                            .font(.caption2.monospacedDigit())
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Text(item.subtitle)
-                                        .font(.caption2)
-                                        .foregroundStyle(item.isAlarmBurst ? .orange : .indigo)
-                                }
-                                .padding(.vertical, 2)
-                            }
-                        }
-                    }
-                } header: {
-                    Text("Notification Queue (64-Slot Manager)")
-                }
-
-                // 4. Hardware & Permissions Diagnostics
-                Section("Hardware & Permissions") {
-                    HStack {
-                        Label("Overnight Silent Audio Loop", systemImage: "waveform")
-                        Spacer()
-                        Text(alarmEngine.isSilentKeepAliveRunning ? "Active" : "Standby")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(alarmEngine.isSilentKeepAliveRunning ? .green : .secondary)
-                    }
-
-                    HStack {
-                        Label("Notifications", systemImage: "bell.badge")
-                        Spacer()
-                        Text(notificationStatusString)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(notificationScheduler.authorizationStatus == .authorized ? .green : .orange)
-                    }
-
-                    if notificationScheduler.authorizationStatus != .authorized {
-                        Button("Request Notification Permission") {
-                            Task {
-                                _ = await notificationScheduler.requestAuthorizationIfNeeded()
-                            }
-                        }
-                    }
-
-                    HStack {
-                        Label("Camera (QR & Photo Proof)", systemImage: "camera")
-                        Spacer()
-                        Text(cameraStatusString)
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(cameraAuthStatus == .authorized ? .green : .orange)
-                    }
-
-                    if cameraAuthStatus == .notDetermined {
-                        Button("Request Camera Permission") {
-                            AVCaptureDevice.requestAccess(for: .video) { _ in
-                                Task { @MainActor in
-                                    cameraAuthStatus = AVCaptureDevice.authorizationStatus(for: .video)
-                                }
-                            }
-                        }
-                    }
-
-                    HStack {
-                        Label("CoreMotion Step Counter", systemImage: "figure.walk.motion")
-                        Spacer()
-                        Text(CMPedometer.isStepCountingAvailable() ? "CMPedometer Ready" : "Accelerometer Fallback")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(CMPedometer.isStepCountingAvailable() ? .green : .orange)
-                    }
-                }
-
-                // 5. Apple Shortcuts (AppIntents) Info
-                Section("Apple Shortcuts Integration (AppIntents)") {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Complete Habit", systemImage: "checkmark.circle.fill")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Marks any habit completed for today directly from the iOS Shortcuts app or Siri.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
-
-                    VStack(alignment: .leading, spacing: 6) {
-                        Label("Arm Morning Alarm", systemImage: "alarm.waves.left.and.right.fill")
-                            .font(.subheadline.weight(.semibold))
-                        Text("Arms your morning alarm, starts the overnight silent audio loop, and schedules the 20-notification fallback burst.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.vertical, 2)
+                // 4. Permissions & Diagnostics
+                Section("Permissions & System Status") {
+                    statusRow(
+                        title: "Guided Access",
+                        value: alarmEngine.isGuidedAccessEnabled ? "LOCKED" : "OFF",
+                        color: alarmEngine.isGuidedAccessEnabled ? .green : .red
+                    )
+                    statusRow(
+                        title: "Notifications",
+                        value: notificationScheduler.authorizationStatus == .authorized
+                            ? "Authorized (\(notificationScheduler.totalPendingCount)/64)"
+                            : "Not Authorized",
+                        color: notificationScheduler.authorizationStatus == .authorized ? .green : .orange
+                    )
+                    statusRow(
+                        title: "Camera (Vision & Proof)",
+                        value: cameraAuthStatus == .authorized ? "Authorized" : "Pending",
+                        color: cameraAuthStatus == .authorized ? .green : .orange
+                    )
+                    statusRow(
+                        title: "Calendars (EventKit)",
+                        value: focusManager.isCalendarAuthorized ? "Full Access" : "Not Connected",
+                        color: focusManager.isCalendarAuthorized ? .green : .orange
+                    )
                 }
             }
-            .navigationTitle("Settings")
-            .onAppear {
-                cameraAuthStatus = AVCaptureDevice.authorizationStatus(for: .video)
-                Task {
-                    await notificationScheduler.refreshAuthorizationStatus()
+            .navigationTitle("Settings & Backup")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .fontWeight(.bold)
                 }
+            }
+            .onAppear {
+                geminiKeyInput = KeychainService.loadGeminiAPIKey()
+                offlineFallbackEnabled = KeychainService.offlineVisionFallbackEnabled
+                cameraAuthStatus = AVCaptureDevice.authorizationStatus(for: .video)
+                alarmEngine.refreshGuidedAccessStatus()
             }
             .sheet(isPresented: $showingBarcodeScanner) {
                 RegisterBarcodeScannerModal { scannedCode in
                     registeredBarcode = scannedCode
                 }
             }
+            .fileExporter(
+                isPresented: $showingFileExporter,
+                document: exportDocument,
+                contentType: .json,
+                defaultFilename: "DailyOS_Backup_\(HabitItem.dateKey())"
+            ) { result in
+                switch result {
+                case .success:
+                    backupStatusIsError = false
+                    backupStatusMessage = "Exported JSON backup file successfully."
+                case .failure(let error):
+                    backupStatusIsError = true
+                    backupStatusMessage = "Export failed: \(error.localizedDescription)"
+                }
+            }
+            .fileImporter(
+                isPresented: $showingFileImporter,
+                allowedContentTypes: [.json],
+                allowsMultipleSelection: false
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard let fileURL = urls.first else { return }
+                    let accessing = fileURL.startAccessingSecurityScopedResource()
+                    defer {
+                        if accessing { fileURL.stopAccessingSecurityScopedResource() }
+                    }
+                    do {
+                        let data = try Data(contentsOf: fileURL)
+                        let summary = try BackupService.importJSONData(data)
+                        backupStatusIsError = false
+                        backupStatusMessage = summary
+                    } catch {
+                        backupStatusIsError = true
+                        backupStatusMessage = "Import failed: \(error.localizedDescription)"
+                    }
+                case .failure(let error):
+                    backupStatusIsError = true
+                    backupStatusMessage = "Could not open file: \(error.localizedDescription)"
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func statusRow(title: String, value: String, color: Color) -> some View {
+        HStack {
+            Text(title)
+            Spacer()
+            Text(value)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(color)
         }
     }
 
-    private var notificationStatusString: String {
-        switch notificationScheduler.authorizationStatus {
-        case .authorized, .provisional, .ephemeral: return "Authorized"
-        case .denied: return "Denied"
-        case .notDetermined: return "Not Requested"
-        @unknown default: return "Unknown"
+    private func copyBackupToClipboard() {
+        do {
+            let json = try BackupService.exportJSONString()
+            UIPasteboard.general.string = json
+            backupStatusIsError = false
+            backupStatusMessage = "Copied full JSON backup to Clipboard (\(json.count) chars)."
+        } catch {
+            backupStatusIsError = true
+            backupStatusMessage = "Backup failed: \(error.localizedDescription)"
         }
     }
 
-    private var cameraStatusString: String {
-        switch cameraAuthStatus {
-        case .authorized: return "Authorized"
-        case .denied, .restricted: return "Denied"
-        case .notDetermined: return "Not Requested"
-        @unknown default: return "Unknown"
+    private func prepareFileExport() {
+        do {
+            let data = try BackupService.exportJSONData()
+            exportDocument = DailyOSBackupDocument(jsonData: data)
+            showingFileExporter = true
+        } catch {
+            backupStatusIsError = true
+            backupStatusMessage = "Export preparation failed: \(error.localizedDescription)"
         }
     }
 
-    private func triggerSandboxMission(_ mission: MissionType) {
-        let now = Calendar.current.dateComponents([.hour, .minute], from: Date())
-        let sandboxAlarm = AlarmItem(
-            label: "Sandbox Test (\(mission.shortBadge))",
-            hour: now.hour ?? 7,
-            minute: now.minute ?? 0,
-            isEnabled: true,
-            repeatDays: [],
-            tone: .synthEngine,
-            missionType: mission,
-            stepGoal: 20,
-            mathDifficulty: .medium,
-            mathProblemCount: 3,
-            customTargetBarcode: registeredBarcode
-        )
-        alarmEngine.triggerAlarm(sandboxAlarm)
+    private func importBackupFromClipboard() {
+        guard let raw = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty,
+              let data = raw.data(using: .utf8) else {
+            backupStatusIsError = true
+            backupStatusMessage = "Clipboard does not contain a valid DailyOS JSON backup."
+            return
+        }
+        do {
+            let summary = try BackupService.importJSONData(data)
+            backupStatusIsError = false
+            backupStatusMessage = summary
+        } catch {
+            backupStatusIsError = true
+            backupStatusMessage = "Clipboard import failed: \(error.localizedDescription)"
+        }
     }
 }

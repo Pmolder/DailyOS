@@ -22,10 +22,14 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>DailyOS syncs with your iOS calendars to automatically schedule 30-40 minute focus accountability check-ins during your events.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>DailyOS reads your calendar events to run focus accountability blocks.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>DailyOS requires camera access to scan target QR/barcodes for alarm dismissal missions and to capture live photo proof when completing daily habits.</string>
+	<string>DailyOS requires camera access for on-device AI pushup/squat wake missions, QR/barcode alarm dismissal, and live photo proof during focus check-ins.</string>
 	<key>NSMotionUsageDescription</key>
-	<string>DailyOS requires motion and pedometer access to count your live steps during step-counter alarm dismissal missions.</string>
+	<string>DailyOS uses motion and pedometer sensors for step-counter wake missions.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
@@ -41,5 +45,7 @@
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<key>UIUserInterfaceStyle</key>
+	<string>Dark</string>
 </dict>
 </plist>

@@ -66,6 +66,7 @@ enum Weekday: Int, CaseIterable, Codable, Identifiable, Comparable {
 // MARK: - Alarm Tone
 
 enum AlarmTone: String, CaseIterable, Codable, Identifiable {
+    case nuclearSiren = "nuclear_siren"
     case classicPulse = "classic_pulse"
     case radarChime = "radar_chime"
     case digitalSiren = "digital_siren"
@@ -76,6 +77,7 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
 
     var displayName: String {
         switch self {
+        case .nuclearSiren: return "Nuclear Siren / Klaxon"
         case .classicPulse: return "Classic Pulse (880Hz)"
         case .radarChime: return "Radar Beacon (1046Hz)"
         case .digitalSiren: return "Cyber Siren (Dual Sweep)"
@@ -86,6 +88,7 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
 
     var bundledFileName: String? {
         switch self {
+        case .nuclearSiren: return "nuclear_siren.wav"
         case .classicPulse: return "alarm_classic.wav"
         case .radarChime: return "alarm_radar.wav"
         case .digitalSiren: return "alarm_siren.wav"
@@ -96,6 +99,7 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
 
     var baseFrequency: Double {
         switch self {
+        case .nuclearSiren: return 620.0
         case .classicPulse: return 880.0
         case .radarChime: return 1046.5
         case .digitalSiren: return 784.0
@@ -106,6 +110,7 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
 
     var secondaryFrequency: Double {
         switch self {
+        case .nuclearSiren: return 1480.0
         case .classicPulse: return 1760.0
         case .radarChime: return 1318.5
         case .digitalSiren: return 1568.0
@@ -116,6 +121,7 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
 
     var modulationRateHz: Double {
         switch self {
+        case .nuclearSiren: return 1.8
         case .classicPulse: return 4.0
         case .radarChime: return 6.0
         case .digitalSiren: return 8.0
@@ -128,37 +134,50 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
 // MARK: - Dismissal Mission Types
 
 enum MissionType: String, CaseIterable, Codable, Identifiable {
-    case none = "none"
-    case steps = "steps"
+    case pushups = "pushups"
+    case squats = "squats"
     case qrBarcode = "qr_barcode"
+    case steps = "steps"
     case math = "math"
+    case none = "none"
 
     var id: String { rawValue }
 
+    /// Anti-cheat Wake mission modes exposed in the alarm editor.
+    static var wakeModes: [MissionType] {
+        [.pushups, .squats, .qrBarcode]
+    }
+
     var displayName: String {
         switch self {
-        case .none: return "Standard (No Mission)"
+        case .pushups: return "AI Camera Pushups (Vision)"
+        case .squats: return "AI Camera Squats (Vision)"
+        case .qrBarcode: return "QR / Barcode Scan"
         case .steps: return "Step Counter (CoreMotion)"
-        case .qrBarcode: return "QR / Barcode Scanner"
         case .math: return "Math Challenge"
+        case .none: return "Standard (No Mission)"
         }
     }
 
     var shortBadge: String {
         switch self {
-        case .none: return "Tap to Dismiss"
-        case .steps: return "Steps"
+        case .pushups: return "AI Pushups"
+        case .squats: return "AI Squats"
         case .qrBarcode: return "QR/Barcode"
+        case .steps: return "Steps"
         case .math: return "Math"
+        case .none: return "Dismiss"
         }
     }
 
     var iconName: String {
         switch self {
-        case .none: return "bell.fill"
-        case .steps: return "figure.walk"
+        case .pushups: return "figure.core.training"
+        case .squats: return "figure.strengthtraining.functional"
         case .qrBarcode: return "qrcode.viewfinder"
+        case .steps: return "figure.walk"
         case .math: return "function"
+        case .none: return "bell.fill"
         }
     }
 }
@@ -191,6 +210,7 @@ final class AlarmItem {
     var repeatDaysRaw: String
     var toneRaw: String
     var missionTypeRaw: String
+    var repGoal: Int = 15
     var stepGoal: Int
     var mathDifficultyRaw: String
     var mathProblemCount: Int
@@ -201,13 +221,14 @@ final class AlarmItem {
 
     init(
         id: UUID = UUID(),
-        label: String = "Morning Alarm",
+        label: String = "Nuclear Wake Up",
         hour: Int = 7,
         minute: Int = 0,
         isEnabled: Bool = true,
         repeatDays: Set<Int> = [2, 3, 4, 5, 6],
-        tone: AlarmTone = .classicPulse,
-        missionType: MissionType = .math,
+        tone: AlarmTone = .nuclearSiren,
+        missionType: MissionType = .pushups,
+        repGoal: Int = 15,
         stepGoal: Int = 50,
         mathDifficulty: MathDifficulty = .medium,
         mathProblemCount: Int = 3,
@@ -224,6 +245,7 @@ final class AlarmItem {
         self.repeatDaysRaw = repeatDays.sorted().map(String.init).joined(separator: ",")
         self.toneRaw = tone.rawValue
         self.missionTypeRaw = missionType.rawValue
+        self.repGoal = max(3, repGoal)
         self.stepGoal = max(5, stepGoal)
         self.mathDifficultyRaw = mathDifficulty.rawValue
         self.mathProblemCount = max(1, mathProblemCount)
@@ -248,12 +270,12 @@ final class AlarmItem {
     }
 
     var tone: AlarmTone {
-        get { AlarmTone(rawValue: toneRaw) ?? .classicPulse }
+        get { AlarmTone(rawValue: toneRaw) ?? .nuclearSiren }
         set { toneRaw = newValue.rawValue }
     }
 
     var missionType: MissionType {
-        get { MissionType(rawValue: missionTypeRaw) ?? .none }
+        get { MissionType(rawValue: missionTypeRaw) ?? .pushups }
         set { missionTypeRaw = newValue.rawValue }
     }
 
@@ -272,14 +294,18 @@ final class AlarmItem {
 
     var missionSummary: String {
         switch missionType {
-        case .none:
-            return "Standard Dismiss"
-        case .steps:
-            return "\(stepGoal) Steps"
+        case .pushups:
+            return "\(repGoal) AI Pushups"
+        case .squats:
+            return "\(repGoal) AI Squats"
         case .qrBarcode:
             return "Scan QR/Barcode"
+        case .steps:
+            return "\(stepGoal) Steps"
         case .math:
             return "\(mathProblemCount)x \(mathDifficulty.rawValue.capitalized) Math"
+        case .none:
+            return "Standard Dismiss"
         }
     }
 

@@ -10,21 +10,21 @@ struct HabitEditorView: View {
     @State private var title: String = ""
     @State private var notes: String = ""
     @State private var iconName: String = "checkmark.seal.fill"
-    @State private var reminderEnabled: Bool = true
+    @State private var timeOfDay: HabitTimeOfDay = .morning
+    @State private var reminderEnabled: Bool = false
     @State private var reminderTime: Date = Date()
     @State private var repeatDays: Set<Int> = [1, 2, 3, 4, 5, 6, 7]
     @State private var soundOption: NotificationSoundOption = .chimeBell
-    @State private var requiresPhotoProof: Bool = false
 
     private let availableIcons: [String] = [
         "drop.fill",
+        "sun.max.fill",
         "figure.strengthtraining.traditional",
         "book.fill",
         "brain.head.profile",
-        "bed.double.fill",
+        "lock.shield.fill",
         "pills.fill",
         "leaf.fill",
-        "pencil.and.list.clipboard",
         "checkmark.seal.fill",
         "flame.fill"
     ]
@@ -33,8 +33,16 @@ struct HabitEditorView: View {
         NavigationStack {
             Form {
                 Section("Habit Details") {
-                    TextField("Habit Name (e.g., Drink Water)", text: $title)
-                    TextField("Notes or Motivation", text: $notes)
+                    TextField("Habit Title", text: $title)
+                    TextField("Notes (Optional)", text: $notes)
+
+                    Picker("Time of Day", selection: $timeOfDay) {
+                        ForEach(HabitTimeOfDay.allCases) { segment in
+                            Label(segment.displayName, systemImage: segment.iconName)
+                                .tag(segment)
+                        }
+                    }
+                    .pickerStyle(.segmented)
 
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Icon")
@@ -51,10 +59,10 @@ struct HabitEditorView: View {
                                             .font(.title3)
                                             .frame(width: 40, height: 40)
                                             .background(
-                                                selected ? Color.indigo : Color.secondary.opacity(0.15),
+                                                selected ? Color.green : Color.secondary.opacity(0.18),
                                                 in: RoundedRectangle(cornerRadius: 10)
                                             )
-                                            .foregroundStyle(selected ? .white : .primary)
+                                            .foregroundStyle(selected ? .black : .primary)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -64,15 +72,7 @@ struct HabitEditorView: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("Photo Proof Verification") {
-                    Toggle("Require Live Camera Photo Proof", isOn: $requiresPhotoProof)
-
-                    Text("When enabled, checking off this habit inside DailyOS requires taking a live camera snapshot (photo library uploads are blocked).")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("Repeat Days & Reminder Schedule") {
+                Section("Schedule & Optional Reminder") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Scheduled Days")
@@ -80,7 +80,7 @@ struct HabitEditorView: View {
                             Spacer()
                             Text(Weekday.formatSummary(for: repeatDays))
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.indigo)
+                                .foregroundStyle(.green)
                         }
 
                         HStack(spacing: 6) {
@@ -98,10 +98,10 @@ struct HabitEditorView: View {
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 8)
                                         .background(
-                                            isSelected ? Color.indigo : Color.secondary.opacity(0.15),
+                                            isSelected ? Color.green : Color.secondary.opacity(0.18),
                                             in: RoundedRectangle(cornerRadius: 8)
                                         )
-                                        .foregroundStyle(isSelected ? .white : .primary)
+                                        .foregroundStyle(isSelected ? .black : .primary)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -109,7 +109,7 @@ struct HabitEditorView: View {
                     }
                     .padding(.vertical, 4)
 
-                    Toggle("Scheduled Local Notification", isOn: $reminderEnabled)
+                    Toggle("Local Reminder Notification", isOn: $reminderEnabled)
 
                     if reminderEnabled {
                         DatePicker(
@@ -127,7 +127,7 @@ struct HabitEditorView: View {
                         Button {
                             AlarmEngine.shared.previewNotificationSound(soundOption)
                         } label: {
-                            Label("Preview Notification Sound", systemImage: "speaker.wave.2.fill")
+                            Label("Preview Sound", systemImage: "speaker.wave.2.fill")
                         }
                     }
                 }
@@ -147,7 +147,7 @@ struct HabitEditorView: View {
                         saveHabit()
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
                 }
             }
             .onAppear(perform: loadInitialValues)
@@ -163,10 +163,10 @@ struct HabitEditorView: View {
             title = habit.title
             notes = habit.notes
             iconName = habit.iconName
+            timeOfDay = habit.timeOfDay
             reminderEnabled = habit.reminderEnabled
             repeatDays = habit.repeatDays.isEmpty ? Set(1...7) : habit.repeatDays
             soundOption = habit.soundOption
-            requiresPhotoProof = habit.requiresPhotoProof
 
             var comps = calendar.dateComponents([.year, .month, .day], from: Date())
             comps.hour = habit.reminderHour
@@ -192,23 +192,30 @@ struct HabitEditorView: View {
             habit.title = cleanTitle
             habit.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
             habit.iconName = iconName
+            habit.timeOfDay = timeOfDay
             habit.reminderEnabled = reminderEnabled
             habit.reminderHour = hour
             habit.reminderMinute = minute
             habit.repeatDays = repeatDays
             habit.soundOption = soundOption
-            habit.requiresPhotoProof = requiresPhotoProof
+            habit.requiresPhotoProof = false
         } else {
+            let existingInSegment = SharedModelContainer.shared.fetchHabits()
+                .filter { $0.timeOfDay == timeOfDay }
+            let nextOrder = (existingInSegment.map(\.sortOrder).max() ?? -1) + 1
+
             let newHabit = HabitItem(
                 title: cleanTitle,
                 notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
                 iconName: iconName,
+                timeOfDay: timeOfDay,
+                sortOrder: nextOrder,
                 reminderEnabled: reminderEnabled,
                 reminderHour: hour,
                 reminderMinute: minute,
                 repeatDays: repeatDays,
                 soundOption: soundOption,
-                requiresPhotoProof: requiresPhotoProof
+                requiresPhotoProof: false
             )
             modelContext.insert(newHabit)
         }

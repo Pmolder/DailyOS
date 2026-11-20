@@ -93,9 +93,6 @@ final class NotificationScheduler: ObservableObject {
 
     // MARK: - Master 64-Notification Queue Scheduler
 
-    /// Rebuilds the pending notification queue within iOS's 64-pending-notification limit:
-    /// 1. Schedules the 20-notification fallback burst (spaced 5s apart) for the next upcoming active alarm(s).
-    /// 2. Fills the remaining queue capacity (up to 64 total pending notifications) with the next chronological habit reminders.
     func rescheduleAll() async {
         WavFileSynthesizer.ensureCustomSoundsInstalled()
         await refreshAuthorizationStatus()
@@ -103,10 +100,15 @@ final class NotificationScheduler: ObservableObject {
         let alarms = SharedModelContainer.shared.fetchAlarms()
         let habits = SharedModelContainer.shared.fetchHabits()
 
-        center.removeAllPendingNotificationRequests()
+        // Preserve any active focus check-in notification while replacing alarm/habit queue
+        let existing = await center.pendingNotificationRequests()
+        let toRemove = existing
+            .map(\.identifier)
+            .filter { $0 != "focus_accountability_checkin" }
+        center.removePendingNotificationRequests(withIdentifiers: toRemove)
 
         let now = Date()
-        var totalScheduled = 0
+        var totalScheduled = existing.contains(where: { $0.identifier == "focus_accountability_checkin" }) ? 1 : 0
         var alarmBurstScheduled = 0
         var habitScheduled = 0
         var summaries: [QueuedNotificationSummary] = []
@@ -120,8 +122,6 @@ final class NotificationScheduler: ObservableObject {
             }
             .sorted { $0.nextDate < $1.nextDate }
 
-        // Reserve room so habits also get queued if multiple alarms exist, while always guaranteeing
-        // at least one full 20-notification burst for the next upcoming alarm.
         let maxAlarmBurstsToQueue = min(enabledAlarmsWithDates.count, 2)
 
         for entryIndex in 0..<maxAlarmBurstsToQueue {
@@ -137,8 +137,8 @@ final class NotificationScheduler: ObservableObject {
                 guard timeInterval >= 1.0 else { continue }
 
                 let content = UNMutableNotificationContent()
-                content.title = "⏰ \(alarm.label) (\(burstIndex + 1)/\(Self.alarmBurstCount))"
-                content.body = "Mission required: \(alarm.missionSummary). Open DailyOS to dismiss!"
+                content.title = "☢️ \(alarm.label) (\(burstIndex + 1)/\(Self.alarmBurstCount))"
+                content.body = "Mission required: \(alarm.missionSummary). Open DailyOS now!"
                 content.categoryIdentifier = Self.alarmCategoryIdentifier
                 content.interruptionLevel = .timeSensitive
                 content.userInfo = [
@@ -150,7 +150,7 @@ final class NotificationScheduler: ObservableObject {
                 if let soundFile = alarm.tone.bundledFileName {
                     content.sound = UNNotificationSound(named: UNNotificationSoundName(soundFile))
                 } else {
-                    content.sound = .default
+                    content.sound = UNNotificationSound(named: UNNotificationSoundName("nuclear_siren.wav"))
                 }
 
                 let trigger = UNTimeIntervalNotificationTrigger(timeInterval: timeInterval, repeats: false)
@@ -165,7 +165,7 @@ final class NotificationScheduler: ObservableObject {
                         QueuedNotificationSummary(
                             id: requestID,
                             title: content.title,
-                            subtitle: "Alarm Fallback Burst #\(burstIndex + 1)",
+                            subtitle: "Wake Fallback Burst #\(burstIndex + 1)",
                             fireDate: fireDate,
                             isAlarmBurst: true
                         )
@@ -176,7 +176,7 @@ final class NotificationScheduler: ObservableObject {
             }
         }
 
-        // 2. Collect all upcoming habit reminders and sort chronologically to fill remaining slots up to 64
+        // 2. Fill remaining queue capacity up to 64 with upcoming habit reminders
         struct UpcomingHabitEvent {
             let habit: HabitItem
             let fireDate: Date
@@ -196,8 +196,8 @@ final class NotificationScheduler: ObservableObject {
 
         let remainingHabitSlots = max(0, Self.maxPendingLimit - totalScheduled)
         let eventsToSchedule = upcomingHabitEvents.prefix(remainingHabitSlots)
-
         let calendar = Calendar.current
+
         for (idx, event) in eventsToSchedule.enumerated() {
             guard totalScheduled < Self.maxPendingLimit else { break }
 
@@ -206,16 +206,8 @@ final class NotificationScheduler: ObservableObject {
             let dateKey = HabitItem.dateKey(for: fireDate)
 
             let content = UNMutableNotificationContent()
-            content.title = event.isSnoozed ? "🔔 Snoozed: \(habit.title)" : "📋 Habit Reminder: \(habit.title)"
-            if habit.requiresPhotoProof {
-                content.body = habit.notes.isEmpty
-                    ? "Time to complete \(habit.title) (Photo Proof enabled)."
-                    : "\(habit.notes) • Photo Proof enabled"
-            } else {
-                content.body = habit.notes.isEmpty
-                    ? "Hold notification to Mark Done or Snooze 15m."
-                    : habit.notes
-            }
+            content.title = event.isSnoozed ? "🔔 Snoozed: \(habit.title)" : "✓ \(habit.timeOfDay.displayName) Habit: \(habit.title)"
+            content.body = habit.notes.isEmpty ? "Tap or hold to Mark Done or Snooze 15m." : habit.notes
             content.categoryIdentifier = Self.habitCategoryIdentifier
             content.interruptionLevel = .timeSensitive
             content.userInfo = [
@@ -244,7 +236,7 @@ final class NotificationScheduler: ObservableObject {
                     QueuedNotificationSummary(
                         id: requestID,
                         title: habit.title,
-                        subtitle: "Sound: \(habit.soundOption.displayName)",
+                        subtitle: "\(habit.timeOfDay.displayName) • \(habit.soundOption.displayName)",
                         fireDate: fireDate,
                         isAlarmBurst: false
                     )
@@ -273,19 +265,24 @@ final class NotificationScheduler: ObservableObject {
         let userInfo = response.notification.request.content.userInfo
         let actionID = response.actionIdentifier
 
-        // Check if this is an alarm burst notification
+        // Focus accountability notification tap
+        if let type = userInfo["type"] as? String, type == "focus_checkin" {
+            FocusAccountabilityManager.shared.triggerCheckInDue(immediateAlarm: false)
+            return
+        }
+
+        // Alarm burst notification tap
         if let alarmIDString = userInfo["alarmID"] as? String,
            let alarmUUID = UUID(uuidString: alarmIDString) {
             let alarms = SharedModelContainer.shared.fetchAlarms()
-            if let matchingAlarm = alarms.first(where: { $0.id == alarmUUID }) {
-                if AlarmEngine.shared.activeRingingAlarm == nil {
-                    AlarmEngine.shared.triggerAlarm(matchingAlarm)
-                }
+            if let matchingAlarm = alarms.first(where: { $0.id == alarmUUID }),
+               AlarmEngine.shared.activeRingingAlarm == nil {
+                AlarmEngine.shared.triggerAlarm(matchingAlarm)
             }
             return
         }
 
-        // Handle Habit interactive actions ("Mark Done" and "Snooze 15m")
+        // Interactive Habit actions
         guard let habitIDString = userInfo["habitID"] as? String,
               let habitUUID = UUID(uuidString: habitIDString) else {
             return
@@ -303,8 +300,7 @@ final class NotificationScheduler: ObservableObject {
             await rescheduleAll()
 
         case Self.actionSnooze15mIdentifier:
-            let snoozeTarget = Date().addingTimeInterval(15 * 60)
-            habit.snoozedUntil = snoozeTarget
+            habit.snoozedUntil = Date().addingTimeInterval(15 * 60)
             SharedModelContainer.shared.save()
             await rescheduleAll()
 

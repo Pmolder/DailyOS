@@ -1,6 +1,40 @@
 import Foundation
 import SwiftData
 
+// MARK: - Habit Time-of-Day Segment
+
+enum HabitTimeOfDay: String, CaseIterable, Codable, Identifiable {
+    case morning = "morning"
+    case day = "day"
+    case evening = "evening"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .morning: return "Morning"
+        case .day: return "Day"
+        case .evening: return "Evening"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .morning: return "sunrise.fill"
+        case .day: return "sun.max.fill"
+        case .evening: return "moon.stars.fill"
+        }
+    }
+
+    var sortIndex: Int {
+        switch self {
+        case .morning: return 0
+        case .day: return 1
+        case .evening: return 2
+        }
+    }
+}
+
 // MARK: - Notification Sound Options
 
 enum NotificationSoundOption: String, CaseIterable, Codable, Identifiable {
@@ -60,6 +94,8 @@ final class HabitItem {
     var title: String
     var notes: String
     var iconName: String
+    var timeOfDayRaw: String = HabitTimeOfDay.morning.rawValue
+    var sortOrder: Int = 0
     var reminderEnabled: Bool
     var reminderHour: Int
     var reminderMinute: Int
@@ -76,7 +112,9 @@ final class HabitItem {
         title: String = "Morning Hydration",
         notes: String = "Drink 500ml of water right after waking up",
         iconName: String = "drop.fill",
-        reminderEnabled: Bool = true,
+        timeOfDay: HabitTimeOfDay = .morning,
+        sortOrder: Int = 0,
+        reminderEnabled: Bool = false,
         reminderHour: Int = 8,
         reminderMinute: Int = 0,
         repeatDays: Set<Int> = [1, 2, 3, 4, 5, 6, 7],
@@ -91,6 +129,8 @@ final class HabitItem {
         self.title = title
         self.notes = notes
         self.iconName = iconName
+        self.timeOfDayRaw = timeOfDay.rawValue
+        self.sortOrder = sortOrder
         self.reminderEnabled = reminderEnabled
         self.reminderHour = reminderHour
         self.reminderMinute = reminderMinute
@@ -101,6 +141,11 @@ final class HabitItem {
         self.photoProofsData = try? JSONEncoder().encode(photoProofs)
         self.snoozedUntil = snoozedUntil
         self.createdAt = createdAt
+    }
+
+    var timeOfDay: HabitTimeOfDay {
+        get { HabitTimeOfDay(rawValue: timeOfDayRaw) ?? .morning }
+        set { timeOfDayRaw = newValue.rawValue }
     }
 
     var repeatDays: Set<Int> {
@@ -164,6 +209,16 @@ final class HabitItem {
         return String(format: "%04d-%02d-%02d", y, m, d)
     }
 
+    static func date(from key: String) -> Date? {
+        let parts = key.split(separator: "-").compactMap { Int($0) }
+        guard parts.count == 3 else { return nil }
+        var comps = DateComponents()
+        comps.year = parts[0]
+        comps.month = parts[1]
+        comps.day = parts[2]
+        return Calendar.current.date(from: comps)
+    }
+
     func isCompleted(on date: Date = Date()) -> Bool {
         completedDateStrings.contains(Self.dateKey(for: date))
     }
@@ -196,9 +251,63 @@ final class HabitItem {
         completedDateStrings = current
     }
 
+    func toggleCompletion(on date: Date = Date()) {
+        if isCompleted(on: date) {
+            markIncomplete(on: date)
+        } else {
+            markCompleted(on: date)
+        }
+    }
+
     func photoProof(for date: Date = Date()) -> PhotoProofRecord? {
         let key = Self.dateKey(for: date)
         return photoProofs.first(where: { $0.dateString == key })
+    }
+
+    // MARK: - Accuracy & Consistency Analytics
+
+    /// Returns completion percentage (0.0...1.0) over the past `days` days (including today).
+    func completionRate(lastDays days: Int, referenceDate: Date = Date()) -> Double {
+        guard days > 0 else { return 0.0 }
+        let calendar = Calendar.current
+        let completed = completedDateStrings
+        var scheduledCount = 0
+        var completedCount = 0
+
+        for offset in 0..<days {
+            guard let day = calendar.date(byAdding: .day, value: -offset, to: referenceDate) else { continue }
+            if isScheduled(on: day) {
+                scheduledCount += 1
+                if completed.contains(Self.dateKey(for: day)) {
+                    completedCount += 1
+                }
+            }
+        }
+        guard scheduledCount > 0 else { return 0.0 }
+        return Double(completedCount) / Double(scheduledCount)
+    }
+
+    /// All-time completion percentage from habit creation (or earliest logged completion) through today.
+    var allTimeCompletionRate: Double {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let createdDay = calendar.startOfDay(for: createdAt)
+
+        let earliestLogged = completedDateStrings
+            .compactMap { Self.date(from: $0) }
+            .map { calendar.startOfDay(for: $0) }
+            .min()
+
+        let startDay = min(createdDay, earliestLogged ?? createdDay)
+        let daySpan = max(1, (calendar.dateComponents([.day], from: startDay, to: today).day ?? 0) + 1)
+        return completionRate(lastDays: min(daySpan, 3650), referenceDate: today)
+    }
+
+    static func dailyCompletionSummary(habits: [HabitItem], on date: Date) -> (completed: Int, scheduled: Int, ratio: Double) {
+        let scheduledHabits = habits.filter { $0.isScheduled(on: date) }
+        guard !scheduledHabits.isEmpty else { return (0, 0, 0.0) }
+        let completedCount = scheduledHabits.filter { $0.isCompleted(on: date) }.count
+        return (completedCount, scheduledHabits.count, Double(completedCount) / Double(scheduledHabits.count))
     }
 
     var currentStreak: Int {
@@ -218,11 +327,9 @@ final class HabitItem {
                 streak += 1
             } else {
                 if dayOffset == 0 {
-                    // Today not yet completed; allow streak from yesterday
                     continue
                 }
                 if !isScheduled(on: checkDate) {
-                    // Not scheduled on this weekday; streak continues across unscheduled days
                     continue
                 }
                 break
@@ -249,7 +356,6 @@ final class HabitItem {
             let weekday = calendar.component(.weekday, from: targetDay)
             guard activeDays.contains(weekday) else { continue }
 
-            // If today is already completed, skip today's scheduled reminder
             if offset == 0 && isCompleted(on: targetDay) {
                 continue
             }

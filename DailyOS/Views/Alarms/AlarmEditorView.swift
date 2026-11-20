@@ -8,13 +8,11 @@ struct AlarmEditorView: View {
     let alarmToEdit: AlarmItem?
 
     @State private var selectedTime: Date = Date()
-    @State private var label: String = "Morning Alarm"
+    @State private var label: String = "Nuclear Wake Up"
     @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6]
-    @State private var selectedTone: AlarmTone = .classicPulse
-    @State private var selectedMission: MissionType = .math
-    @State private var stepGoal: Int = 50
-    @State private var mathDifficulty: MathDifficulty = .medium
-    @State private var mathProblemCount: Int = 3
+    @State private var selectedTone: AlarmTone = .nuclearSiren
+    @State private var selectedMission: MissionType = .pushups
+    @State private var repGoal: Int = 15
     @State private var customTargetBarcode: String = ""
     @State private var showingBarcodeScannerSheet: Bool = false
 
@@ -44,7 +42,7 @@ struct AlarmEditorView: View {
                             Spacer()
                             Text(Weekday.formatSummary(for: repeatDays))
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.indigo)
+                                .foregroundStyle(.orange)
                         }
 
                         HStack(spacing: 6) {
@@ -62,10 +60,10 @@ struct AlarmEditorView: View {
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 8)
                                         .background(
-                                            isSelected ? Color.indigo : Color.secondary.opacity(0.15),
+                                            isSelected ? Color.orange : Color.secondary.opacity(0.18),
                                             in: RoundedRectangle(cornerRadius: 8)
                                         )
-                                        .foregroundStyle(isSelected ? .white : .primary)
+                                        .foregroundStyle(isSelected ? .black : .primary)
                                 }
                                 .buttonStyle(.plain)
                             }
@@ -74,9 +72,9 @@ struct AlarmEditorView: View {
                     .padding(.vertical, 4)
                 }
 
-                // Alarm Tone Selection
-                Section("Alarm Tone & Audio Engine") {
-                    Picker("Alarm Tone", selection: $selectedTone) {
+                // Nuclear Alarm Tone Selection
+                Section("Escalating Alarm Siren") {
+                    Picker("Siren Tone", selection: $selectedTone) {
                         ForEach(AlarmTone.allCases) { tone in
                             Text(tone.displayName).tag(tone)
                         }
@@ -85,73 +83,69 @@ struct AlarmEditorView: View {
                     Button {
                         AlarmEngine.shared.previewAlarmTone(selectedTone)
                     } label: {
-                        Label("Preview Selected Alarm Tone (2.5s)", systemImage: "speaker.wave.2.fill")
+                        Label("Preview Siren (2.5s)", systemImage: "speaker.wave.3.fill")
+                            .foregroundStyle(.orange)
                     }
+
+                    Text("Escalation curve: 0:00–0:30 haptic pulses (0% volume) → 0:30–1:00 ramp to 30% → 1:00–1:30 ramp to 100%.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
 
-                // Dismissal Mission Configuration
-                Section("Dismissal Mission") {
-                    Picker("Mission Type", selection: $selectedMission) {
-                        ForEach(MissionType.allCases) { mission in
+                // Anti-Cheat Dismissal Mission
+                Section("Anti-Cheat Dismissal Mission") {
+                    Picker("Mission Mode", selection: $selectedMission) {
+                        ForEach(MissionType.wakeModes) { mission in
                             Label(mission.displayName, systemImage: mission.iconName)
                                 .tag(mission)
                         }
                     }
+                    .onChange(of: selectedMission) { _, newMission in
+                        if newMission == .pushups && repGoal == 20 {
+                            repGoal = 15
+                        } else if newMission == .squats && repGoal == 15 {
+                            repGoal = 20
+                        }
+                    }
 
                     switch selectedMission {
-                    case .none:
-                        Text("Alarm can be dismissed with a single tap on the wake screen.")
+                    case .pushups:
+                        Stepper("Target Pushups: \(repGoal) reps", value: $repGoal, in: 5...50, step: 5)
+                        Text("100% on-device Apple Vision front-camera body pose. Counts a rep when elbow angle drops < 95° with straight torso and extends > 155°.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                    case .steps:
-                        Stepper(
-                            "Target Steps: \(stepGoal)",
-                            value: $stepGoal,
-                            in: 10...500,
-                            step: 10
-                        )
-                        Text("Uses CoreMotion CMPedometer to track live walking steps before the alarm stops.")
+                    case .squats:
+                        Stepper("Target Squats: \(repGoal) reps", value: $repGoal, in: 5...60, step: 5)
+                        Text("100% on-device Apple Vision front-camera body pose. Counts a rep when hip-knee angle drops < 100° and returns upright.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
                     case .qrBarcode:
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Default Registered Code: \(SharedModelContainer.shared.registeredBarcode)")
+                            Text("Default Target Code: \(SharedModelContainer.shared.registeredBarcode)")
                                 .font(.caption.monospaced())
                                 .foregroundStyle(.secondary)
 
-                            TextField(
-                                "Optional Custom Code Override",
-                                text: $customTargetBarcode
-                            )
-                            .font(.subheadline.monospaced())
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
+                            TextField("Optional Per-Alarm Target Code", text: $customTargetBarcode)
+                                .font(.subheadline.monospaced())
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
 
                             Button {
                                 showingBarcodeScannerSheet = true
                             } label: {
-                                Label("Scan QR / Barcode with Camera", systemImage: "qrcode.viewfinder")
+                                Label("Scan Barcode / QR with Camera", systemImage: "qrcode.viewfinder")
+                                    .foregroundStyle(.orange)
                             }
                         }
 
-                    case .math:
-                        Picker("Difficulty", selection: $mathDifficulty) {
-                            ForEach(MathDifficulty.allCases) { diff in
-                                Text(diff.displayName).tag(diff)
-                            }
-                        }
-
-                        Stepper(
-                            "Problems to Solve: \(mathProblemCount)",
-                            value: $mathProblemCount,
-                            in: 1...10
-                        )
+                    default:
+                        EmptyView()
                     }
                 }
             }
-            .navigationTitle(alarmToEdit == nil ? "New Alarm" : "Edit Alarm")
+            .navigationTitle(alarmToEdit == nil ? "New Wake Alarm" : "Edit Wake Alarm")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -166,7 +160,7 @@ struct AlarmEditorView: View {
                         saveAlarm()
                         dismiss()
                     }
-                    .fontWeight(.semibold)
+                    .fontWeight(.bold)
                 }
             }
             .onAppear(perform: loadInitialValues)
@@ -191,10 +185,8 @@ struct AlarmEditorView: View {
             label = alarm.label
             repeatDays = alarm.repeatDays
             selectedTone = alarm.tone
-            selectedMission = alarm.missionType
-            stepGoal = alarm.stepGoal
-            mathDifficulty = alarm.mathDifficulty
-            mathProblemCount = alarm.mathProblemCount
+            selectedMission = MissionType.wakeModes.contains(alarm.missionType) ? alarm.missionType : .pushups
+            repGoal = max(5, alarm.repGoal)
             customTargetBarcode = alarm.customTargetBarcode
         } else {
             var comps = calendar.dateComponents([.year, .month, .day], from: Date())
@@ -209,7 +201,7 @@ struct AlarmEditorView: View {
         let hour = comps.hour ?? 7
         let minute = comps.minute ?? 0
         let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Alarm"
+            ? "Nuclear Wake Up"
             : label.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let alarm = alarmToEdit {
@@ -219,9 +211,7 @@ struct AlarmEditorView: View {
             alarm.repeatDays = repeatDays
             alarm.tone = selectedTone
             alarm.missionType = selectedMission
-            alarm.stepGoal = stepGoal
-            alarm.mathDifficulty = mathDifficulty
-            alarm.mathProblemCount = mathProblemCount
+            alarm.repGoal = repGoal
             alarm.customTargetBarcode = customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
             alarm.lastTriggeredMinuteKey = ""
             alarm.isEnabled = true
@@ -234,9 +224,7 @@ struct AlarmEditorView: View {
                 repeatDays: repeatDays,
                 tone: selectedTone,
                 missionType: selectedMission,
-                stepGoal: stepGoal,
-                mathDifficulty: mathDifficulty,
-                mathProblemCount: mathProblemCount,
+                repGoal: repGoal,
                 customTargetBarcode: customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             modelContext.insert(newAlarm)
@@ -257,7 +245,7 @@ struct RegisterBarcodeScannerModal: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 16) {
-                Text("Aim camera at any QR code or product barcode to register it.")
+                Text("Aim camera at any QR code or barcode (e.g. bathroom/kitchen item) to register it.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -269,7 +257,7 @@ struct RegisterBarcodeScannerModal: View {
 
                     RoundedRectangle(cornerRadius: 14)
                         .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
-                        .foregroundStyle(.yellow)
+                        .foregroundStyle(.orange)
                         .frame(width: 220, height: 150)
                 }
                 .padding(.horizontal)
@@ -291,7 +279,7 @@ struct RegisterBarcodeScannerModal: View {
                 .padding(.horizontal)
             }
             .padding(.vertical)
-            .navigationTitle("Scan Target Code")
+            .navigationTitle("Register Target Code")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
