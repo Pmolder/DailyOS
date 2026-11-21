@@ -63,7 +63,7 @@ struct AlarmEditorView: View {
                                             isSelected ? Color.orange : Color.secondary.opacity(0.18),
                                             in: RoundedRectangle(cornerRadius: 8)
                                         )
-                                        .foregroundStyle(isSelected ? .black : .primary)
+                                        .foregroundStyle(isSelected ? Color.black : Color.primary)
                                 }
                                 .buttonStyle(.plain)
                             }

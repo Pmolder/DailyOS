@@ -37,7 +37,7 @@ struct AlarmsListView: View {
                                   ? "waveform.badge.checkmark"
                                   : "moon.zzz.fill")
                                 .font(.title2)
-                                .foregroundStyle(audioManager.isSilentKeepAliveRunning ? .green : .secondary)
+                                .foregroundStyle(audioManager.isSilentKeepAliveRunning ? Color.green : Color.secondary)
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(audioManager.isSilentKeepAliveRunning
@@ -230,11 +230,11 @@ private struct AlarmRowView: View {
                         Text(alarm.formattedTime)
                             .font(.system(size: 38, weight: .bold, design: .rounded))
                             .monospacedDigit()
-                            .foregroundStyle(alarm.isEnabled ? .white : .secondary)
+                            .foregroundStyle(alarm.isEnabled ? Color.white : Color.secondary)
 
                         Text(alarm.label)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(alarm.isEnabled ? .white.opacity(0.9) : .secondary)
+                            .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.9) : Color.secondary)
                             .lineLimit(1)
                     }
 

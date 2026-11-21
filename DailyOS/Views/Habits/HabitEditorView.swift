@@ -62,7 +62,7 @@ struct HabitEditorView: View {
                                                 selected ? Color.green : Color.secondary.opacity(0.18),
                                                 in: RoundedRectangle(cornerRadius: 10)
                                             )
-                                            .foregroundStyle(selected ? .black : .primary)
+                                            .foregroundStyle(selected ? Color.black : Color.primary)
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -101,7 +101,7 @@ struct HabitEditorView: View {
                                             isSelected ? Color.green : Color.secondary.opacity(0.18),
                                             in: RoundedRectangle(cornerRadius: 8)
                                         )
-                                        .foregroundStyle(isSelected ? .black : .primary)
+                                        .foregroundStyle(isSelected ? Color.black : Color.primary)
                                 }
                                 .buttonStyle(.plain)
                             }

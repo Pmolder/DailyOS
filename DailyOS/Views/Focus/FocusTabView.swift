@@ -658,7 +658,7 @@ private struct CalendarFilterSheet: View {
                                 }
                                 Spacer()
                                 Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                                    .foregroundStyle(isSelected ? .green : .secondary)
+                                    .foregroundStyle(isSelected ? Color.green : Color.secondary)
                             }
                         }
                     }

@@ -279,17 +279,17 @@ private struct SegmentedHabitRowView: View {
                         Text(habit.title)
                             .font(.subheadline.weight(.semibold))
                             .strikethrough(completedToday, color: .secondary)
-                            .foregroundStyle(completedToday ? .secondary : .white)
+                            .foregroundStyle(completedToday ? Color.secondary : Color.white)
 
                         Spacer()
 
                         HStack(spacing: 2) {
                             Image(systemName: "flame.fill")
                                 .font(.caption2)
-                                .foregroundStyle(habit.currentStreak > 0 ? .orange : .secondary)
+                                .foregroundStyle(habit.currentStreak > 0 ? Color.orange : Color.secondary)
                             Text("\(habit.currentStreak)d")
                                 .font(.caption2.weight(.bold).monospacedDigit())
-                                .foregroundStyle(habit.currentStreak > 0 ? .orange : .secondary)
+                                .foregroundStyle(habit.currentStreak > 0 ? Color.orange : Color.secondary)
                         }
                     }
 
@@ -316,7 +316,7 @@ private struct SegmentedHabitRowView: View {
     private func statTag(_ title: String, _ ratio: Double) -> some View {
         Text("\(title) \(Int(round(ratio * 100)))%")
             .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .foregroundStyle(ratio >= 0.8 ? .green : (ratio >= 0.4 ? .cyan : .secondary))
+            .foregroundStyle(ratio >= 0.8 ? Color.green : (ratio >= 0.4 ? Color.cyan : Color.secondary))
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
