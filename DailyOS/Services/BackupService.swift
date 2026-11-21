@@ -38,12 +38,12 @@ enum BackupService {
         let checkInLogs = store.fetchFocusCheckInLogs()
 
         let payload = DailyOSBackupPayload(
-            schemaVersion: 2,
+            schemaVersion: 3,
             exportedAt: Date(),
-            registeredBarcode: store.registeredBarcode,
-            registeredBarcodeLabel: store.registeredBarcodeLabel,
-            trackedCalendarIDs: FocusAccountabilityManager.shared.trackedCalendarIDs.sorted(),
-            focusCheckInIntervalMinutes: FocusAccountabilityManager.shared.checkInIntervalMinutes,
+            trackedAppleCalendarIDs: FocusAccountabilityManager.shared.trackedAppleCalendarIDs.sorted(),
+            appleCalendarSyncEnabled: FocusAccountabilityManager.shared.appleCalendarSyncEnabled,
+            googleCalendarSyncEnabled: GoogleAuthService.shared.syncGoogleCalendarEnabled,
+            googleTasksSyncEnabled: GoogleAuthService.shared.syncGoogleTasksEnabled,
             offlineVisionFallbackEnabled: KeychainService.offlineVisionFallbackEnabled,
             alarms: alarms.map {
                 AlarmBackupDTO(
@@ -57,9 +57,6 @@ enum BackupService {
                     missionTypeRaw: $0.missionTypeRaw,
                     repGoal: $0.repGoal,
                     stepGoal: $0.stepGoal,
-                    mathDifficultyRaw: $0.mathDifficultyRaw,
-                    mathProblemCount: $0.mathProblemCount,
-                    customTargetBarcode: $0.customTargetBarcode,
                     createdAt: $0.createdAt
                 )
             },
@@ -130,19 +127,10 @@ enum BackupService {
         let store = SharedModelContainer.shared
         let context = store.mainContext
 
-        // Clear existing local records cleanly before restoring backup
-        for alarm in store.fetchAlarms() {
-            context.delete(alarm)
-        }
-        for habit in store.fetchHabits() {
-            context.delete(habit)
-        }
-        for block in store.fetchManualFocusBlocks() {
-            context.delete(block)
-        }
-        for log in store.fetchFocusCheckInLogs() {
-            context.delete(log)
-        }
+        for alarm in store.fetchAlarms() { context.delete(alarm) }
+        for habit in store.fetchHabits() { context.delete(habit) }
+        for block in store.fetchManualFocusBlocks() { context.delete(block) }
+        for log in store.fetchFocusCheckInLogs() { context.delete(log) }
 
         for dto in payload.alarms {
             let item = AlarmItem(
@@ -153,12 +141,9 @@ enum BackupService {
                 isEnabled: dto.isEnabled,
                 repeatDays: [],
                 tone: AlarmTone(rawValue: dto.toneRaw) ?? .nuclearSiren,
-                missionType: MissionType(rawValue: dto.missionTypeRaw) ?? .pushups,
+                missionType: MissionType(rawValue: dto.missionTypeRaw) ?? .squats,
                 repGoal: dto.repGoal,
                 stepGoal: dto.stepGoal,
-                mathDifficulty: MathDifficulty(rawValue: dto.mathDifficultyRaw) ?? .medium,
-                mathProblemCount: dto.mathProblemCount,
-                customTargetBarcode: dto.customTargetBarcode,
                 createdAt: dto.createdAt
             )
             item.repeatDaysRaw = dto.repeatDaysRaw
@@ -211,18 +196,18 @@ enum BackupService {
             context.insert(log)
         }
 
-        store.registeredBarcode = payload.registeredBarcode
-        store.registeredBarcodeLabel = payload.registeredBarcodeLabel
         KeychainService.offlineVisionFallbackEnabled = payload.offlineVisionFallbackEnabled
         FocusAccountabilityManager.shared.restoreSettings(
-            trackedCalendarIDs: Set(payload.trackedCalendarIDs),
-            intervalMinutes: payload.focusCheckInIntervalMinutes
+            trackedAppleCalendarIDs: Set(payload.trackedAppleCalendarIDs),
+            appleEnabled: payload.appleCalendarSyncEnabled,
+            googleCalendarEnabled: payload.googleCalendarSyncEnabled,
+            googleTasksEnabled: payload.googleTasksSyncEnabled
         )
 
         store.save()
         AlarmEngine.shared.syncWithAlarms()
-        FocusAccountabilityManager.shared.refreshTodaySchedule()
+        FocusAccountabilityManager.shared.refreshScheduleLocally()
 
-        return "Restored \(payload.alarms.count) alarms, \(payload.habits.count) habits, \(payload.manualFocusBlocks.count) focus blocks, and \(payload.focusCheckInLogs.count) check-in logs."
+        return "Restored \(payload.alarms.count) alarms, \(payload.habits.count) habits, \(payload.manualFocusBlocks.count) tasks, and \(payload.focusCheckInLogs.count) logs."
     }
 }

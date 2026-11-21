@@ -29,7 +29,7 @@ struct AlarmsListView: View {
                         .listRowBackground(Color.clear)
                 }
 
-                // 2. Overnight Escalation Engine Status Card
+                // 2. Overnight Hardware Volume Engine Status Card
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
@@ -41,24 +41,24 @@ struct AlarmsListView: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(audioManager.isSilentKeepAliveRunning
-                                     ? "Nuclear Wake Engine Armed"
+                                     ? "Wake Engine Armed"
                                      : "Wake Engine Standby")
                                     .font(.subheadline.weight(.bold))
 
                                 Text(audioManager.isSilentKeepAliveRunning
                                      ? "Silent .playback keep-alive active • Screen auto-lock disabled"
-                                     : "Toggle an alarm ON to arm overnight silent audio & idle lock")
+                                     : "Add and enable an alarm to arm overnight audio & idle lock")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                         }
 
-                        // 90-Second Curve Legend
+                        // Exact Hardware Volume Curve Legend
                         HStack(spacing: 6) {
-                            curveBadge("0-30s", "Haptics 0%", .cyan)
-                            curveBadge("30-60s", "0→30%", .orange)
-                            curveBadge("60-90s", "30→100%", .red)
+                            curveBadge("0–30s", "Vib Only 0%", .cyan)
+                            curveBadge("30–60s", "HW 1→15%", .orange)
+                            curveBadge("60–90s", "HW 15→50%", .red)
                         }
 
                         if let nextDate = alarmEngine.nextScheduledAlarmDate {
@@ -82,13 +82,13 @@ struct AlarmsListView: View {
                     .padding(.vertical, 6)
                 }
 
-                // 3. Alarms List
-                Section("Nuclear Wake Alarms") {
+                // 3. Alarms List (100% Empty on First Launch)
+                Section("Wake Alarms") {
                     if alarms.isEmpty {
                         ContentUnavailableView(
                             "No Wake Alarms",
                             systemImage: "alarm.waves.left.and.right",
-                            description: Text("Tap + to create an escalating alarm with AI Pushups, AI Squats, or QR/Barcode dismissal.")
+                            description: Text("Tap + to create a wake alarm with Squats or Steps challenge dismissal.")
                         )
                     } else {
                         ForEach(alarms) { alarm in
@@ -190,13 +190,13 @@ private struct GuidedAccessBannerView: View {
         HStack(spacing: 10) {
             Image(systemName: isLocked ? "lock.shield.fill" : "exclamationmark.shield.fill")
                 .font(.headline)
-                .foregroundStyle(isLocked ? .green : .red)
+                .foregroundStyle(isLocked ? Color.green : Color.red)
 
             Text(isLocked
                  ? "GUIDED ACCESS: LOCKED"
                  : "GUIDED ACCESS: OFF — TRIPLE-CLICK SIDE BUTTON BEFORE SLEEP")
                 .font(.caption.weight(.heavy))
-                .foregroundStyle(isLocked ? .green : .red)
+                .foregroundStyle(isLocked ? Color.green : Color.red)
                 .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 0)
@@ -232,7 +232,7 @@ private struct AlarmRowView: View {
                             .monospacedDigit()
                             .foregroundStyle(alarm.isEnabled ? Color.white : Color.secondary)
 
-                        Text(alarm.label)
+                        Text(alarm.displayLabel)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.9) : Color.secondary)
                             .lineLimit(1)
@@ -273,7 +273,7 @@ private struct AlarmRowView: View {
         .padding(.vertical, 4)
         .contextMenu {
             Button(action: onTestRing) {
-                Label("Test 90s Escalation & Mission Now", systemImage: "flame.fill")
+                Label("Test Alarm & Challenge Now", systemImage: "flame.fill")
             }
             Button(action: onTapEdit) {
                 Label("Edit Alarm", systemImage: "pencil")

@@ -5,12 +5,13 @@ import CoreHaptics
 import UIKit
 import Combine
 
-/// Unified audio & haptics engine powering:
-/// - Overnight silent `.playback + .mixWithOthers` keep-alive loop
-/// - Exact 90-second Wake escalation curve (0-30s haptic only, 30-60s 0%->30%, 60-90s 30%->100%)
-/// - Mission mute/pause & 100% nuclear penalty blast
-/// - Good morning completion chime + AVSpeechSynthesizer
-/// - Tab 3 Focus 2-minute escalating warning alarm (0%->50% over 120s)
+/// Unified audio, haptics, and real-time hardware volume escalation engine.
+/// Drives 4 exact hardware volume profiles via `SystemVolumeController` while keeping
+/// `AVAudioPlayer.volume = 1.0` so hardware volume controls the real acoustic output:
+/// 1. Wake Alarm: 0-30s vibration only (0%), 30-60s hardware 1%->15%, 60-90s hardware 15%->50% hold.
+/// 2. Wake Challenge Inactivity Penalty: hardware 1%->50% over 15s.
+/// 3. Focus Task Check-In Alarm (Normal): hardware 1%->22% over 120s (never >22%).
+/// 4. Focus Task Check-In Alarm (Evasion Penalty): hardware 0%->22% over 10s (never >22%).
 @MainActor
 final class AlarmAudioManager: ObservableObject {
     static let shared = AlarmAudioManager()
@@ -19,20 +20,23 @@ final class AlarmAudioManager: ObservableObject {
 
     @Published private(set) var isSilentKeepAliveRunning: Bool = false
     @Published private(set) var isWakeSirenActive: Bool = false
-    @Published private(set) var isSirenPausedForMission: Bool = false
+    @Published private(set) var isSirenSilencedForChallenge: Bool = false
     @Published private(set) var isPenaltyBlastActive: Bool = false
     @Published private(set) var isUsingSynthFallback: Bool = false
     @Published private(set) var wakeElapsedSeconds: TimeInterval = 0
-    @Published private(set) var currentVolumeFraction: Float = 0.0
+    @Published private(set) var currentTargetVolumeFraction: Float = 0.0
     @Published private(set) var escalationPhaseLabel: String = "STANDBY"
 
-    // Focus 2-minute warning alarm telemetry
+    // Focus Task Check-In Alarm telemetry
     @Published private(set) var isFocusWarningActive: Bool = false
     @Published private(set) var isFocusWarningPaused: Bool = false
+    @Published private(set) var isFocusEvasionPenalty: Bool = false
     @Published private(set) var focusWarningElapsedSeconds: TimeInterval = 0
     @Published private(set) var focusWarningVolumeFraction: Float = 0.0
 
     // MARK: - Private Audio & Haptic State
+
+    private let volumeController = SystemVolumeController.shared
 
     private var silentPlayer: AVAudioPlayer?
     private var wakeFilePlayer: AVAudioPlayer?
@@ -47,15 +51,17 @@ final class AlarmAudioManager: ObservableObject {
     private var hapticEngine: CHHapticEngine?
     private let heavyImpact = UIImpactFeedbackGenerator(style: .heavy)
 
-    private var wakeRampTimer: Timer?
+    private var wakeScheduleTimer: Timer?
     private var wakeHapticTimer: Timer?
     private var wakeStartDate: Date?
+    private var wakePhaseIndex: Int = 0
     private var activeWakeTone: AlarmTone = .nuclearSiren
 
-    private var focusRampTimer: Timer?
+    private var focusMonitorTimer: Timer?
     private var focusHapticTimer: Timer?
     private var focusStartDate: Date?
-    private var accumulatedFocusElapsed: TimeInterval = 0
+    private var focusTargetDuration: TimeInterval = 120.0
+    private var focusStartVolume: Float = 0.01
 
     private var previewStopWorkItem: DispatchWorkItem?
 
@@ -71,7 +77,7 @@ final class AlarmAudioManager: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
 
-    // MARK: - CoreHaptics Setup
+    // MARK: - CoreHaptics
 
     private func prepareHapticEngine() {
         guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
@@ -161,130 +167,169 @@ final class AlarmAudioManager: ObservableObject {
         }
     }
 
-    // MARK: - TAB 1: Exact 90-Second Escalating Wake Alarm
+    // MARK: - PROFILE 1: Wake Alarm (0-30s Vibration Only -> 30-60s 1%-15% -> 60-90s 15%-50%)
 
-    /// Starts the exact 90-second escalation curve:
-    /// - 0:00 – 0:30: 0% audio volume + rhythmic haptic pulses every 1.2s
-    /// - 0:30 – 1:00: smooth linear volume ramp 0% -> 30% + rhythmic haptics
-    /// - 1:00 – 1:30: smooth linear volume ramp 30% -> 100%, holding at 100%
     func startWakeEscalation(tone: AlarmTone) {
         stopPreview()
         stopFocusWarning()
-        silentPlayer?.stop()
-        isSilentKeepAliveRunning = false
 
         activeWakeTone = tone
         isWakeSirenActive = true
-        isSirenPausedForMission = false
+        isSirenSilencedForChallenge = false
         isPenaltyBlastActive = false
         wakeElapsedSeconds = 0
-        currentVolumeFraction = 0.0
-        escalationPhaseLabel = "PHASE 1 • HAPTIC WAKE (0:00–0:30)"
+        wakePhaseIndex = 0
+        currentTargetVolumeFraction = 0.0
+        escalationPhaseLabel = "PHASE 1 • VIBRATION ONLY (0:00–0:30)"
         wakeStartDate = Date()
 
         setIdleTimerDisabled(true)
-        activateOverridePlaybackSession()
-        startWakeAudioSource(tone: tone, initialVolume: 0.0)
+        volumeController.ensureMountedInKeyWindow()
+        volumeController.stopVolumeControl()
+        stopWakeAudioOnly()
+
+        // Keep audio session alive silently during 0-30s vibration-only phase
+        startSilentKeepAliveForVibrationPhase()
         startWakeHapticLoop()
 
-        wakeRampTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+        wakeScheduleTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.tickWakeEscalation()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        wakeRampTimer = timer
+        wakeScheduleTimer = timer
+    }
+
+    private func startSilentKeepAliveForVibrationPhase() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.duckOthers])
+            try session.setActive(true)
+            if silentPlayer == nil {
+                let silentWav = WavFileSynthesizer.makeSilentWavData(durationSeconds: 2.0)
+                let player = try AVAudioPlayer(data: silentWav)
+                player.numberOfLoops = -1
+                player.volume = 0.01
+                player.prepareToPlay()
+                silentPlayer = player
+            }
+            silentPlayer?.play()
+        } catch {
+            print("[AlarmAudioManager] Vibration phase audio session error: \(error.localizedDescription)")
+        }
     }
 
     private func tickWakeEscalation() {
-        guard isWakeSirenActive, let startDate = wakeStartDate else { return }
+        guard isWakeSirenActive else { return }
 
-        if isSirenPausedForMission {
-            applyWakeVolume(0.0)
+        if isSirenSilencedForChallenge {
+            currentTargetVolumeFraction = 0.0
             return
         }
 
         if isPenaltyBlastActive {
-            currentVolumeFraction = 1.0
-            escalationPhaseLabel = "PENALTY BLAST • 100% NUCLEAR SIREN"
-            applyWakeVolume(1.0)
+            currentTargetVolumeFraction = volumeController.targetHardwareVolume
+            escalationPhaseLabel = "INACTIVITY PENALTY • RAMPING 1% → 50% (15s)"
             return
         }
 
+        guard let startDate = wakeStartDate else { return }
         let elapsed = Date().timeIntervalSince(startDate)
         wakeElapsedSeconds = elapsed
 
-        let targetVolume: Float
         if elapsed < 30.0 {
-            targetVolume = 0.0
-            escalationPhaseLabel = "PHASE 1 • HAPTIC WAKE (0:00–0:30)"
+            // 0s – 30s: Vibration only, 0% audible alarm
+            currentTargetVolumeFraction = 0.0
+            escalationPhaseLabel = "PHASE 1 • VIBRATION ONLY (0:00–0:30)"
         } else if elapsed < 60.0 {
-            let fraction = (elapsed - 30.0) / 30.0
-            targetVolume = Float(fraction * 0.30)
-            escalationPhaseLabel = "PHASE 2 • RAMPING 0% → 30%"
+            // 30s – 60s: Hardware volume 1% (0.01) -> 15% (0.15)
+            if wakePhaseIndex < 1 {
+                wakePhaseIndex = 1
+                silentPlayer?.stop()
+                activateOverridePlaybackSession()
+                startWakeAudioSourceAtFullPlayerGain(tone: activeWakeTone)
+                volumeController.startRamp(from: 0.01, to: 0.15, duration: 30.0)
+            }
+            currentTargetVolumeFraction = volumeController.targetHardwareVolume
+            escalationPhaseLabel = "PHASE 2 • HARDWARE RAMP 1% → 15%"
         } else if elapsed < 90.0 {
-            let fraction = (elapsed - 60.0) / 30.0
-            targetVolume = Float(0.30 + fraction * 0.70)
-            escalationPhaseLabel = "PHASE 3 • NUCLEAR RAMP 30% → 100%"
+            // 60s – 90s: Hardware volume 15% (0.15) -> 50% (0.50)
+            if wakePhaseIndex < 2 {
+                wakePhaseIndex = 2
+                if wakeFilePlayer == nil && synthAudioEngine == nil {
+                    silentPlayer?.stop()
+                    activateOverridePlaybackSession()
+                    startWakeAudioSourceAtFullPlayerGain(tone: activeWakeTone)
+                }
+                volumeController.startRamp(from: 0.15, to: 0.50, duration: 30.0)
+            }
+            currentTargetVolumeFraction = volumeController.targetHardwareVolume
+            escalationPhaseLabel = "PHASE 3 • HARDWARE RAMP 15% → 50%"
         } else {
-            targetVolume = 1.0
-            escalationPhaseLabel = "MAX NUCLEAR SIREN • 100%"
+            // 90s+: Hold hardware volume at 50% (0.50) with active volume-button correction
+            if wakePhaseIndex < 3 {
+                wakePhaseIndex = 3
+                volumeController.setLockedTargetVolume(0.50)
+            }
+            currentTargetVolumeFraction = 0.50
+            escalationPhaseLabel = "HOLDING HARDWARE VOLUME AT 50%"
         }
-
-        currentVolumeFraction = max(0.0, min(1.0, targetVolume))
-        applyWakeVolume(currentVolumeFraction)
     }
 
-    /// Immediately mutes/pauses the siren when the user taps "Start Mission" or resumes active mission progress.
-    func pauseWakeSirenForMission() {
+    // MARK: - PROFILE 2: Wake Challenge Silence & 15s Inactivity Penalty (1% -> 50%)
+
+    /// Immediately silences the alarm and releases volume lock when "Do Challenge" is tapped
+    /// or immediately when a squat/step is completed after inactivity.
+    func silenceWakeForChallenge() {
         guard isWakeSirenActive else { return }
-        isSirenPausedForMission = true
+        isSirenSilencedForChallenge = true
         isPenaltyBlastActive = false
-        currentVolumeFraction = 0.0
-        escalationPhaseLabel = "MISSION ACTIVE • SIREN MUTED"
-        applyWakeVolume(0.0)
+        currentTargetVolumeFraction = 0.0
+        escalationPhaseLabel = "CHALLENGE ACTIVE • ALARM SILENCED"
+
+        stopWakeAudioOnly()
+        silentPlayer?.stop()
+        volumeController.stopVolumeControl()
         wakeHapticTimer?.invalidate()
         wakeHapticTimer = nil
     }
 
-    /// Immediately blasts the nuclear siren at 100% volume on mission timeout or >3s inactivity.
-    func blastNuclearPenaltyFullVolume() {
+    /// Immediately resumes alarm sound and smoothly ramps hardware system volume
+    /// from 1% (0.01) to 50% (0.50) over 15 seconds with active hardware volume-button correction.
+    func startWakeInactivityPenalty() {
         guard isWakeSirenActive else { return }
-        isSirenPausedForMission = false
+        isSirenSilencedForChallenge = false
         isPenaltyBlastActive = true
-        currentVolumeFraction = 1.0
-        escalationPhaseLabel = "PENALTY BLAST • 100% NUCLEAR SIREN"
+        escalationPhaseLabel = "INACTIVITY PENALTY • RAMPING 1% → 50% (15s)"
 
+        silentPlayer?.stop()
         activateOverridePlaybackSession()
-        if wakeFilePlayer == nil && synthAudioEngine == nil {
-            startWakeAudioSource(tone: activeWakeTone, initialVolume: 1.0)
-        } else {
-            if let player = wakeFilePlayer, !player.isPlaying {
-                player.play()
-            }
-            if let engine = synthAudioEngine, !engine.isRunning {
-                try? engine.start()
-            }
-            applyWakeVolume(1.0)
-        }
+        startWakeAudioSourceAtFullPlayerGain(tone: activeWakeTone)
+        volumeController.startRamp(from: 0.01, to: 0.50, duration: 15.0)
+        currentTargetVolumeFraction = volumeController.targetHardwareVolume
         startWakeHapticLoop()
     }
 
-    /// Stops the wake siren completely, plays the completion chime, speaks "Good morning", and unlocks idle timer.
+    /// Stops the wake alarm completely, plays completion chime + "Good morning", unlocks idle timer.
     func completeWakeMissionAndCelebrate() {
         stopWakeAudioOnly()
-        wakeRampTimer?.invalidate()
-        wakeRampTimer = nil
+        silentPlayer?.stop()
+        volumeController.stopVolumeControl()
+
+        wakeScheduleTimer?.invalidate()
+        wakeScheduleTimer = nil
         wakeHapticTimer?.invalidate()
         wakeHapticTimer = nil
 
         isWakeSirenActive = false
-        isSirenPausedForMission = false
+        isSirenSilencedForChallenge = false
         isPenaltyBlastActive = false
         wakeElapsedSeconds = 0
-        currentVolumeFraction = 0.0
-        escalationPhaseLabel = "MISSION COMPLETE"
+        wakePhaseIndex = 0
+        currentTargetVolumeFraction = 0.0
+        escalationPhaseLabel = "CHALLENGE COMPLETE"
 
         setIdleTimerDisabled(false)
         playGoodMorningChimeAndSpeech()
@@ -320,7 +365,7 @@ final class AlarmAudioManager: ObservableObject {
         triggerRhythmicHapticPulse(intensity: 1.0)
         let timer = Timer(timeInterval: 1.2, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, self.isWakeSirenActive, !self.isSirenPausedForMission else { return }
+                guard let self, self.isWakeSirenActive, !self.isSirenSilencedForChallenge else { return }
                 self.triggerRhythmicHapticPulse(intensity: 1.0)
             }
         }
@@ -328,15 +373,15 @@ final class AlarmAudioManager: ObservableObject {
         wakeHapticTimer = timer
     }
 
-    private func startWakeAudioSource(tone: AlarmTone, initialVolume: Float) {
+    private func startWakeAudioSourceAtFullPlayerGain(tone: AlarmTone) {
         stopWakeAudioOnly()
 
-        // Try bundled or generated WAV file first (unless direct AVAudioEngine synth selected)
         if let fileName = tone.bundledFileName,
            let url = WavFileSynthesizer.resolveSoundURL(fileName: fileName),
            let player = try? AVAudioPlayer(contentsOf: url) {
             player.numberOfLoops = -1
-            player.volume = initialVolume
+            // Keep AVAudioPlayer at 1.0 so SystemVolumeController controls exact hardware volume
+            player.volume = 1.0
             player.prepareToPlay()
             if player.play() {
                 wakeFilePlayer = player
@@ -345,19 +390,11 @@ final class AlarmAudioManager: ObservableObject {
             }
         }
 
-        // Programmatic AVAudioEngine fallback so nuclear siren rings out-of-the-box with zero external files
         startAVAudioEngineNuclearSynth(
             baseFrequency: tone.baseFrequency,
             secondaryFrequency: tone.secondaryFrequency,
-            modulationRateHz: tone.modulationRateHz,
-            initialVolume: initialVolume
+            modulationRateHz: tone.modulationRateHz
         )
-    }
-
-    private func applyWakeVolume(_ volume: Float) {
-        let clamped = max(0.0, min(1.0, volume))
-        wakeFilePlayer?.volume = clamped
-        synthAudioEngine?.mainMixerNode.outputVolume = clamped
     }
 
     private func stopWakeAudioOnly() {
@@ -375,9 +412,11 @@ final class AlarmAudioManager: ObservableObject {
         isUsingSynthFallback = false
     }
 
-    // MARK: - TAB 3: Focus 2-Minute Escalating Warning Alarm (0% -> 50% over 120s)
+    // MARK: - PROFILES 3 & 4: Focus / Task Check-In Alarm
+    // Normal: 1% (0.01) -> 22% (0.22) over 120s
+    // Evasion Penalty: 0% (0.00) -> 22% (0.22) over 10s
 
-    func startFocusWarningEscalation() {
+    func startFocusTaskAlarm(evasionPenalty: Bool) {
         guard !isWakeSirenActive else { return }
         stopPreview()
         silentPlayer?.stop()
@@ -385,57 +424,53 @@ final class AlarmAudioManager: ObservableObject {
 
         isFocusWarningActive = true
         isFocusWarningPaused = false
-        accumulatedFocusElapsed = 0
+        isFocusEvasionPenalty = evasionPenalty
         focusWarningElapsedSeconds = 0
-        focusWarningVolumeFraction = 0.0
         focusStartDate = Date()
+
+        let startVol: Float = evasionPenalty ? 0.00 : 0.01
+        let duration: TimeInterval = evasionPenalty ? 10.0 : 120.0
+        focusStartVolume = startVol
+        focusTargetDuration = duration
+        focusWarningVolumeFraction = startVol
 
         setIdleTimerDisabled(true)
         activateOverridePlaybackSession()
-        startFocusAudioPlayer(initialVolume: 0.0)
+        startFocusAudioPlayerAtFullPlayerGain()
+        volumeController.startRamp(from: startVol, to: 0.22, duration: duration)
         startFocusWarningTimers()
     }
 
     func pauseFocusWarningForPhotoProof() {
         guard isFocusWarningActive else { return }
-        if let start = focusStartDate {
-            accumulatedFocusElapsed += Date().timeIntervalSince(start)
-        }
-        focusStartDate = nil
         isFocusWarningPaused = true
-        focusWarningPlayer?.volume = 0.0
         focusWarningPlayer?.pause()
+        volumeController.stopVolumeControl()
         focusHapticTimer?.invalidate()
         focusHapticTimer = nil
     }
 
-    func resumeFocusWarningAfterFailureOrTimeout() {
-        guard isFocusWarningActive else { return }
-        isFocusWarningPaused = false
-        // Ensure immediately audible on timeout or AI rejection (minimum 25% ramping to 50%)
-        accumulatedFocusElapsed = max(accumulatedFocusElapsed, 60.0)
-        focusStartDate = Date()
-        activateOverridePlaybackSession()
-
-        if focusWarningPlayer == nil {
-            startFocusAudioPlayer(initialVolume: 0.25)
-        } else {
-            focusWarningPlayer?.play()
-        }
-        startFocusWarningTimers()
+    func resumeFocusWarningAfterFailureOrTimeout(evasionPenalty: Bool) {
+        guard !isWakeSirenActive else { return }
+        startFocusTaskAlarm(evasionPenalty: evasionPenalty)
     }
 
     func stopFocusWarning() {
-        focusRampTimer?.invalidate()
-        focusRampTimer = nil
+        focusMonitorTimer?.invalidate()
+        focusMonitorTimer = nil
         focusHapticTimer?.invalidate()
         focusHapticTimer = nil
         focusWarningPlayer?.stop()
         focusWarningPlayer = nil
         focusStartDate = nil
-        accumulatedFocusElapsed = 0
+
+        if !isWakeSirenActive {
+            volumeController.stopVolumeControl()
+        }
+
         isFocusWarningActive = false
         isFocusWarningPaused = false
+        isFocusEvasionPenalty = false
         focusWarningElapsedSeconds = 0
         focusWarningVolumeFraction = 0.0
 
@@ -444,7 +479,9 @@ final class AlarmAudioManager: ObservableObject {
         }
     }
 
-    private func startFocusAudioPlayer(initialVolume: Float) {
+    private func startFocusAudioPlayerAtFullPlayerGain() {
+        focusWarningPlayer?.stop()
+
         let wavData: Data
         if let url = WavFileSynthesizer.resolveSoundURL(fileName: "focus_warning.wav"),
            let fileData = try? Data(contentsOf: url) {
@@ -460,7 +497,7 @@ final class AlarmAudioManager: ObservableObject {
 
         if let player = try? AVAudioPlayer(data: wavData) {
             player.numberOfLoops = -1
-            player.volume = initialVolume
+            player.volume = 1.0
             player.prepareToPlay()
             player.play()
             focusWarningPlayer = player
@@ -468,46 +505,35 @@ final class AlarmAudioManager: ObservableObject {
     }
 
     private func startFocusWarningTimers() {
-        focusRampTimer?.invalidate()
-        let timer = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in
+        focusMonitorTimer?.invalidate()
+        let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.tickFocusWarning()
+                guard let self, self.isFocusWarningActive, !self.isFocusWarningPaused, let start = self.focusStartDate else { return }
+                self.focusWarningElapsedSeconds = Date().timeIntervalSince(start)
+                self.focusWarningVolumeFraction = min(0.22, self.volumeController.targetHardwareVolume)
             }
         }
         RunLoop.main.add(timer, forMode: .common)
-        focusRampTimer = timer
+        focusMonitorTimer = timer
 
         focusHapticTimer?.invalidate()
-        triggerRhythmicHapticPulse(intensity: 0.75)
-        let hTimer = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
+        triggerRhythmicHapticPulse(intensity: 0.85)
+        let hTimer = Timer(timeInterval: 1.8, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.isFocusWarningActive, !self.isFocusWarningPaused else { return }
-                self.triggerRhythmicHapticPulse(intensity: 0.75)
+                self.triggerRhythmicHapticPulse(intensity: 0.85)
             }
         }
         RunLoop.main.add(hTimer, forMode: .common)
         focusHapticTimer = hTimer
     }
 
-    private func tickFocusWarning() {
-        guard isFocusWarningActive, !isFocusWarningPaused, let start = focusStartDate else { return }
-        let elapsed = accumulatedFocusElapsed + Date().timeIntervalSince(start)
-        focusWarningElapsedSeconds = elapsed
-
-        // Linear ramp from 0% to 50% over 120 seconds (2 minutes)
-        let fraction = min(1.0, elapsed / 120.0)
-        let volume = Float(fraction * 0.50)
-        focusWarningVolumeFraction = volume
-        focusWarningPlayer?.volume = volume
-    }
-
-    // MARK: - AVAudioEngine Real-Time Nuclear Siren Synthesizer
+    // MARK: - AVAudioEngine Fallback Synth
 
     private func startAVAudioEngineNuclearSynth(
         baseFrequency: Double,
         secondaryFrequency: Double,
-        modulationRateHz: Double,
-        initialVolume: Float
+        modulationRateHz: Double
     ) {
         let engine = AVAudioEngine()
         let mainMixer = engine.mainMixerNode
@@ -557,7 +583,7 @@ final class AlarmAudioManager: ObservableObject {
 
         engine.attach(sourceNode)
         engine.connect(sourceNode, to: mainMixer, format: sourceFormat)
-        mainMixer.outputVolume = initialVolume
+        mainMixer.outputVolume = 1.0
 
         do {
             try engine.start()
@@ -576,7 +602,14 @@ final class AlarmAudioManager: ObservableObject {
         stopPreview()
 
         activateOverridePlaybackSession()
-        startWakeAudioSource(tone: tone, initialVolume: 0.45)
+        if let fileName = tone.bundledFileName,
+           let url = WavFileSynthesizer.resolveSoundURL(fileName: fileName),
+           let player = try? AVAudioPlayer(contentsOf: url) {
+            player.volume = 0.45
+            player.prepareToPlay()
+            player.play()
+            previewPlayer = player
+        }
 
         let work = DispatchWorkItem { [weak self] in
             Task { @MainActor [weak self] in
@@ -611,10 +644,6 @@ final class AlarmAudioManager: ObservableObject {
         previewStopWorkItem = nil
         previewPlayer?.stop()
         previewPlayer = nil
-
-        if !isWakeSirenActive {
-            stopWakeAudioOnly()
-        }
     }
 
     // MARK: - Session Activation & Interruption Recovery
@@ -622,7 +651,6 @@ final class AlarmAudioManager: ObservableObject {
     private func activateOverridePlaybackSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            // .playback overrides hardware Silent/Mute switch and survives screen lock
             try session.setCategory(.playback, mode: .default, options: [.duckOthers])
             try session.setActive(true)
         } catch {
@@ -640,7 +668,7 @@ final class AlarmAudioManager: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 if let typeVal, let type = AVAudioSession.InterruptionType(rawValue: typeVal), type == .ended {
-                    if self.isWakeSirenActive && !self.isSirenPausedForMission {
+                    if self.isWakeSirenActive && !self.isSirenSilencedForChallenge {
                         self.activateOverridePlaybackSession()
                         self.wakeFilePlayer?.play()
                         if let engine = self.synthAudioEngine, !engine.isRunning {

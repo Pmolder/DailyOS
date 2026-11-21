@@ -8,13 +8,12 @@ struct AlarmEditorView: View {
     let alarmToEdit: AlarmItem?
 
     @State private var selectedTime: Date = Date()
-    @State private var label: String = "Nuclear Wake Up"
+    @State private var label: String = ""
     @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6]
     @State private var selectedTone: AlarmTone = .nuclearSiren
-    @State private var selectedMission: MissionType = .pushups
-    @State private var repGoal: Int = 15
-    @State private var customTargetBarcode: String = ""
-    @State private var showingBarcodeScannerSheet: Bool = false
+    @State private var selectedMission: MissionType = .squats
+    @State private var repGoal: Int = 20
+    @State private var stepGoal: Int = 50
 
     var body: some View {
         NavigationStack {
@@ -31,8 +30,8 @@ struct AlarmEditorView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
                 }
 
-                // Label & Repeat Schedule
-                Section("Label & Schedule") {
+                // Label & ISO-8601 Monday-First Repeat Schedule
+                Section("Label & Schedule (Mon–Sun)") {
                     TextField("Alarm Label", text: $label)
 
                     VStack(alignment: .leading, spacing: 10) {
@@ -72,8 +71,8 @@ struct AlarmEditorView: View {
                     .padding(.vertical, 4)
                 }
 
-                // Nuclear Alarm Tone Selection
-                Section("Escalating Alarm Siren") {
+                // Escalating Alarm Siren
+                Section("Hardware Volume Alarm Siren") {
                     Picker("Siren Tone", selection: $selectedTone) {
                         ForEach(AlarmTone.allCases) { tone in
                             Text(tone.displayName).tag(tone)
@@ -87,61 +86,33 @@ struct AlarmEditorView: View {
                             .foregroundStyle(.orange)
                     }
 
-                    Text("Escalation curve: 0:00–0:30 haptic pulses (0% volume) → 0:30–1:00 ramp to 30% → 1:00–1:30 ramp to 100%.")
+                    Text("Hardware escalation: 0–30s vibration only → 30–60s ramp 1%–15% → 60–90s ramp 15%–50% with volume-button correction.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
 
-                // Anti-Cheat Dismissal Mission
-                Section("Anti-Cheat Dismissal Mission") {
-                    Picker("Mission Mode", selection: $selectedMission) {
-                        ForEach(MissionType.wakeModes) { mission in
+                // Wake Mission Selection (Squats + Steps Only)
+                Section("Wake Challenge Mission") {
+                    Picker("Mission", selection: $selectedMission) {
+                        ForEach(MissionType.allCases) { mission in
                             Label(mission.displayName, systemImage: mission.iconName)
                                 .tag(mission)
                         }
                     }
-                    .onChange(of: selectedMission) { _, newMission in
-                        if newMission == .pushups && repGoal == 20 {
-                            repGoal = 15
-                        } else if newMission == .squats && repGoal == 15 {
-                            repGoal = 20
-                        }
-                    }
+                    .pickerStyle(.segmented)
 
                     switch selectedMission {
-                    case .pushups:
-                        Stepper("Target Pushups: \(repGoal) reps", value: $repGoal, in: 5...50, step: 5)
-                        Text("100% on-device Apple Vision front-camera body pose. Counts a rep when elbow angle drops < 95° with straight torso and extends > 155°.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
                     case .squats:
                         Stepper("Target Squats: \(repGoal) reps", value: $repGoal, in: 5...60, step: 5)
-                        Text("100% on-device Apple Vision front-camera body pose. Counts a rep when hip-knee angle drops < 100° and returns upright.")
+                        Text("On-device Apple Vision front-camera pose tracking. 20s initial grace for Rep 1, then 3.0s per rep.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
 
-                    case .qrBarcode:
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Default Target Code: \(SharedModelContainer.shared.registeredBarcode)")
-                                .font(.caption.monospaced())
-                                .foregroundStyle(.secondary)
-
-                            TextField("Optional Per-Alarm Target Code", text: $customTargetBarcode)
-                                .font(.subheadline.monospaced())
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-
-                            Button {
-                                showingBarcodeScannerSheet = true
-                            } label: {
-                                Label("Scan Barcode / QR with Camera", systemImage: "qrcode.viewfinder")
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-
-                    default:
-                        EmptyView()
+                    case .steps:
+                        Stepper("Target Steps: \(stepGoal) steps", value: $stepGoal, in: 20...200, step: 10)
+                        Text("Live CoreMotion CMPedometer step tracking. 20s initial grace to start stepping, then 3.0s between steps.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -167,16 +138,11 @@ struct AlarmEditorView: View {
             .onDisappear {
                 AlarmEngine.shared.stopPreview()
             }
-            .sheet(isPresented: $showingBarcodeScannerSheet) {
-                RegisterBarcodeScannerModal { scannedCode in
-                    customTargetBarcode = scannedCode
-                }
-            }
         }
     }
 
     private func loadInitialValues() {
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         if let alarm = alarmToEdit {
             var comps = calendar.dateComponents([.year, .month, .day], from: Date())
             comps.hour = alarm.hour
@@ -185,24 +151,23 @@ struct AlarmEditorView: View {
             label = alarm.label
             repeatDays = alarm.repeatDays
             selectedTone = alarm.tone
-            selectedMission = MissionType.wakeModes.contains(alarm.missionType) ? alarm.missionType : .pushups
+            selectedMission = alarm.missionType
             repGoal = max(5, alarm.repGoal)
-            customTargetBarcode = alarm.customTargetBarcode
+            stepGoal = max(20, alarm.stepGoal)
         } else {
             var comps = calendar.dateComponents([.year, .month, .day], from: Date())
             comps.hour = 7
             comps.minute = 0
             selectedTime = calendar.date(from: comps) ?? Date()
+            label = ""
         }
     }
 
     private func saveAlarm() {
-        let comps = Calendar.current.dateComponents([.hour, .minute], from: selectedTime)
+        let comps = ISOWeekCalendar.current.dateComponents([.hour, .minute], from: selectedTime)
         let hour = comps.hour ?? 7
         let minute = comps.minute ?? 0
-        let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Nuclear Wake Up"
-            : label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if let alarm = alarmToEdit {
             alarm.label = cleanLabel
@@ -212,7 +177,7 @@ struct AlarmEditorView: View {
             alarm.tone = selectedTone
             alarm.missionType = selectedMission
             alarm.repGoal = repGoal
-            alarm.customTargetBarcode = customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
+            alarm.stepGoal = stepGoal
             alarm.lastTriggeredMinuteKey = ""
             alarm.isEnabled = true
         } else {
@@ -225,81 +190,12 @@ struct AlarmEditorView: View {
                 tone: selectedTone,
                 missionType: selectedMission,
                 repGoal: repGoal,
-                customTargetBarcode: customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
+                stepGoal: stepGoal
             )
             modelContext.insert(newAlarm)
         }
 
         SharedModelContainer.shared.save()
         AlarmEngine.shared.syncWithAlarms()
-    }
-}
-
-// MARK: - Reusable Live QR/Barcode Registration Scanner Modal
-
-struct RegisterBarcodeScannerModal: View {
-    @Environment(\.dismiss) private var dismiss
-    @StateObject private var scannerVM = BarcodeScannerViewModel()
-    let onScanned: (String) -> Void
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 16) {
-                Text("Aim camera at any QR code or barcode (e.g. bathroom/kitchen item) to register it.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-
-                ZStack {
-                    BarcodeScannerCameraPreview(session: scannerVM.captureSession)
-                        .clipShape(RoundedRectangle(cornerRadius: 18))
-
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [10, 6]))
-                        .foregroundStyle(.orange)
-                        .frame(width: 220, height: 150)
-                }
-                .padding(.horizontal)
-
-                Text(scannerVM.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Button {
-                    scannerVM.toggleTorch()
-                } label: {
-                    Label(
-                        scannerVM.isTorchOn ? "Turn Off Flashlight" : "Turn On Flashlight",
-                        systemImage: scannerVM.isTorchOn ? "flashlight.on.fill" : "flashlight.off.fill"
-                    )
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .padding(.horizontal)
-            }
-            .padding(.vertical)
-            .navigationTitle("Register Target Code")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        scannerVM.stopSession()
-                        dismiss()
-                    }
-                }
-            }
-            .onAppear {
-                scannerVM.onCodeDetected = { code, _ in
-                    scannerVM.stopSession()
-                    onScanned(code)
-                    dismiss()
-                }
-                scannerVM.checkPermissionAndStart()
-            }
-            .onDisappear {
-                scannerVM.stopSession()
-            }
-        }
     }
 }

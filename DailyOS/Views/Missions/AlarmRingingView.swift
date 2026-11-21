@@ -1,33 +1,40 @@
 import SwiftUI
 import AudioToolbox
 
-/// Full-screen locked nuclear wake cover (no dismiss gesture, no snooze, hides alarm controls).
-/// Flow:
-/// 1. Ringing Gate showing live 90s escalation phase + volume curve + "START MISSION".
-/// 2. Active Mission immediately mutes siren, starts a 20s countdown & 3s inactivity watchdog.
-///    If 20s expires or >3s passes without progress, blasts 100% nuclear siren until resumed/completed.
-/// 3. Completion triggers Good Morning chime + AVSpeechSynthesizer and unlocks UI.
+/// Full-screen locked Wake Alarm & Challenge view (no dismiss gesture, no snooze).
+/// Exact Challenge Timing Engine:
+/// 1. Ringing Gate shows real-time hardware volume escalation (0-30s vib, 30-60s 1-15%, 60-90s 15-50%)
+///    and a single "DO CHALLENGE" button.
+/// 2. Tapping "DO CHALLENGE" immediately silences the alarm and starts a 20.0s initial grace timer
+///    (from the exact tap timestamp) to complete Rep 1 / Step 1.
+/// 3. Once Rep 1 / Step 1 is detected, switches to a 3.0s per-rep timer resetting on every rep/step.
+/// 4. If either timer expires: immediately resumes alarm & ramps hardware volume 1% -> 50% over 15s
+///    with active volume-button correction; completing the next squat/step silences it & resets 3.0s.
 struct AlarmRingingView: View {
     let alarm: AlarmItem
     let onDismissAlarm: () -> Void
 
     @ObservedObject private var alarmEngine = AlarmEngine.shared
     @ObservedObject private var audioManager = AlarmAudioManager.shared
+    @ObservedObject private var volumeController = SystemVolumeController.shared
 
     @State private var currentTimeString: String = ""
-    @State private var hasStartedMission: Bool = false
+    @State private var hasStartedChallenge: Bool = false
 
-    // 20-second mission countdown & 3-second inactivity watchdog
-    @State private var missionSecondsRemaining: Double = 20.0
-    @State private var secondsSinceLastProgress: Double = 0.0
-    @State private var watchdogPenaltyReason: String?
+    // Exact 20s initial grace + 3.0s inter-rep timer state
+    @State private var hasCompletedFirstUnit: Bool = false
+    @State private var challengeStartDate: Date?
+    @State private var lastUnitCompletedDate: Date?
+    @State private var countdownSecondsRemaining: Double = 20.0
+    @State private var inactivityPenaltyActive: Bool = false
+    @State private var penaltyBannerText: String?
 
     private let uiTickTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     var body: some View {
         ZStack {
             LinearGradient(
-                colors: audioManager.isPenaltyBlastActive
+                colors: inactivityPenaltyActive
                     ? [Color(red: 0.42, green: 0.02, blue: 0.04), Color(red: 0.18, green: 0.01, blue: 0.02), .black]
                     : [Color(red: 0.08, green: 0.04, blue: 0.12), Color(red: 0.14, green: 0.03, blue: 0.06), .black],
                 startPoint: .topLeading,
@@ -36,10 +43,10 @@ struct AlarmRingingView: View {
             .ignoresSafeArea()
 
             VStack(spacing: 14) {
-                if !hasStartedMission {
+                if !hasStartedChallenge {
                     ringingGateView
                 } else {
-                    activeMissionContainerView
+                    activeChallengeContainerView
                 }
             }
             .padding(.horizontal, 18)
@@ -49,23 +56,23 @@ struct AlarmRingingView: View {
         .interactiveDismissDisabled(true)
         .onAppear {
             updateClockText()
+            volumeController.ensureMountedInKeyWindow()
         }
         .onReceive(uiTickTimer) { _ in
             updateClockText()
-            if hasStartedMission {
-                tickMissionWatchdog()
+            if hasStartedChallenge {
+                tickChallengeTimers()
             }
         }
     }
 
-    // MARK: - Stage 1: Escalating Ringing Gate
+    // MARK: - Stage 1: Ringing Gate
 
     private var ringingGateView: some View {
         VStack(spacing: 22) {
-            // Escalation Phase Badge
             HStack(spacing: 8) {
-                Image(systemName: audioManager.currentVolumeFraction > 0 ? "speaker.wave.3.fill" : "iphone.radiowaves.left.and.right")
-                    .foregroundStyle(audioManager.currentVolumeFraction > 0.3 ? .red : .orange)
+                Image(systemName: audioManager.currentTargetVolumeFraction > 0 ? "speaker.wave.3.fill" : "iphone.radiowaves.left.and.right")
+                    .foregroundStyle(audioManager.currentTargetVolumeFraction > 0.15 ? Color.red : Color.orange)
                 Text(audioManager.escalationPhaseLabel)
                     .font(.caption.weight(.black))
                     .foregroundStyle(.white)
@@ -84,7 +91,7 @@ struct AlarmRingingView: View {
                     .monospacedDigit()
                     .foregroundStyle(.white)
 
-                Text(alarm.label.uppercased())
+                Text(alarm.displayLabel.uppercased())
                     .font(.title3.weight(.bold))
                     .foregroundStyle(.orange)
 
@@ -96,27 +103,27 @@ struct AlarmRingingView: View {
                     .foregroundStyle(.white)
             }
 
-            // Live 90-Second Escalation Telemetry
+            // Live Hardware Volume Telemetry
             VStack(spacing: 10) {
                 HStack {
-                    Text("SIREN VOLUME")
+                    Text("SYSTEM HARDWARE VOLUME")
                         .font(.caption.weight(.bold))
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(Int(round(audioManager.currentVolumeFraction * 100)))%")
-                        .font(.headline.weight(.black).monospacedDigit())
-                        .foregroundStyle(audioManager.currentVolumeFraction >= 0.99 ? .red : .orange)
+                    Text("\(Int(round(audioManager.currentTargetVolumeFraction * 100)))% (HW: \(Int(round(volumeController.currentHardwareVolume * 100)))%)")
+                        .font(.subheadline.weight(.black).monospacedDigit())
+                        .foregroundStyle(audioManager.currentTargetVolumeFraction >= 0.49 ? Color.red : Color.orange)
                 }
 
-                ProgressView(value: Double(audioManager.currentVolumeFraction), total: 1.0)
-                    .tint(audioManager.currentVolumeFraction >= 0.3 ? .red : .orange)
+                ProgressView(value: Double(min(0.50, audioManager.currentTargetVolumeFraction)), total: 0.50)
+                    .tint(audioManager.currentTargetVolumeFraction >= 0.15 ? .red : .orange)
 
                 HStack {
                     Text("Elapsed: \(formatSeconds(audioManager.wakeElapsedSeconds))")
                         .font(.caption2.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.7))
                     Spacer()
-                    Text("Max Siren at 01:30")
+                    Text("Cap: 50% • Vol-Down Lock Active")
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.7))
                 }
@@ -126,20 +133,18 @@ struct AlarmRingingView: View {
 
             Spacer()
 
-            // No Snooze Notice
-            Text("NO SNOOZE • MUTE SWITCH OVERRIDDEN • 20s MISSION WINDOW")
+            Text("NO SNOOZE • 20s FOR 1ST REP • 3s PER REP THEREAFTER")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
 
-            // Start Mission CTA
             Button {
-                startMissionFlow()
+                startChallengeFromTap()
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: alarm.missionType.iconName)
                         .font(.title2.weight(.bold))
-                    Text("START MISSION")
+                    Text("DO CHALLENGE")
                         .font(.title3.weight(.black))
                 }
                 .foregroundStyle(.black)
@@ -151,51 +156,55 @@ struct AlarmRingingView: View {
         }
     }
 
-    // MARK: - Stage 2: Active Locked Mission + Watchdog
+    // MARK: - Stage 2: Active Challenge (20s Initial Grace -> 3.0s Per-Rep Timer)
 
-    private var activeMissionContainerView: some View {
+    private var activeChallengeContainerView: some View {
         VStack(spacing: 12) {
-            // Countdown & Watchdog HUD
             HStack(spacing: 10) {
-                // 20-Second Mission Timer Pill
+                // Active Countdown Pill (20s initial OR 3.0s per-rep)
                 HStack(spacing: 6) {
                     Image(systemName: "timer")
-                    Text(String(format: "%.1fs", max(0, missionSecondsRemaining)))
-                        .monospacedDigit()
+                    if !hasCompletedFirstUnit {
+                        Text(String(format: "1ST REP GRACE: %.1fs", max(0, countdownSecondsRemaining)))
+                            .monospacedDigit()
+                    } else {
+                        Text(String(format: "NEXT REP: %.1fs", max(0, countdownSecondsRemaining)))
+                            .monospacedDigit()
+                    }
                 }
-                .font(.headline.weight(.black))
-                .foregroundStyle(missionSecondsRemaining <= 5 ? .red : .green)
+                .font(.subheadline.weight(.black))
+                .foregroundStyle(countdownSecondsRemaining <= 1.5 || inactivityPenaltyActive ? Color.red : Color.green)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(
-                    (missionSecondsRemaining <= 5 ? Color.red : Color.green).opacity(0.2),
+                    (countdownSecondsRemaining <= 1.5 || inactivityPenaltyActive ? Color.red : Color.green).opacity(0.2),
                     in: Capsule()
                 )
 
                 Spacer()
 
-                // 3-Second Inactivity Watchdog Pill
-                HStack(spacing: 6) {
-                    Image(systemName: audioManager.isPenaltyBlastActive ? "speaker.wave.3.fill" : "bolt.heart.fill")
-                    Text(audioManager.isPenaltyBlastActive
-                         ? "100% PENALTY"
-                         : String(format: "IDLE %.1f/3s", min(3.0, secondsSinceLastProgress)))
+                // Audio Status Pill
+                HStack(spacing: 5) {
+                    Image(systemName: inactivityPenaltyActive ? "speaker.wave.3.fill" : "speaker.slash.fill")
+                    Text(inactivityPenaltyActive
+                         ? "PENALTY \(Int(round(audioManager.currentTargetVolumeFraction * 100)))%"
+                         : "SILENCED")
                         .monospacedDigit()
                 }
                 .font(.caption.weight(.black))
-                .foregroundStyle(audioManager.isPenaltyBlastActive ? .white : .cyan)
-                .padding(.horizontal, 12)
+                .foregroundStyle(inactivityPenaltyActive ? Color.white : Color.cyan)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 8)
                 .background(
-                    audioManager.isPenaltyBlastActive ? Color.red : Color.cyan.opacity(0.2),
+                    inactivityPenaltyActive ? Color.red : Color.cyan.opacity(0.2),
                     in: Capsule()
                 )
             }
 
-            if let penalty = watchdogPenaltyReason {
+            if let penaltyBannerText {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
-                    Text(penalty)
+                    Text(penaltyBannerText)
                         .font(.caption.weight(.bold))
                 }
                 .foregroundStyle(.white)
@@ -205,49 +214,20 @@ struct AlarmRingingView: View {
                 .background(Color.red.opacity(0.85), in: RoundedRectangle(cornerRadius: 12))
             }
 
-            // Mission View Switcher
+            // Challenge Mission View (Squats or Steps ONLY)
             Group {
                 switch alarm.missionType {
-                case .pushups:
-                    VisionExerciseMissionSubView(
-                        mode: .pushups,
-                        repGoal: max(3, alarm.repGoal),
-                        onProgress: registerMissionProgress,
-                        onComplete: completeMission
-                    )
                 case .squats:
-                    VisionExerciseMissionSubView(
-                        mode: .squats,
-                        repGoal: max(3, alarm.repGoal),
-                        onProgress: registerMissionProgress,
-                        onComplete: completeMission
-                    )
-                case .qrBarcode:
-                    BarcodeScannerMissionSubView(
-                        targetCode: resolvedTargetBarcode,
-                        targetLabel: SharedModelContainer.shared.registeredBarcodeLabel,
-                        onProgress: registerMissionProgress,
-                        onComplete: completeMission
+                    SquatsMissionSubView(
+                        repGoal: max(5, alarm.repGoal),
+                        onRepCompleted: handleProgressUnitCompleted,
+                        onComplete: completeChallenge
                     )
                 case .steps:
-                    StepCounterMissionSubView(
-                        stepGoal: max(5, alarm.stepGoal),
-                        onProgress: registerMissionProgress,
-                        onComplete: completeMission
-                    )
-                case .math:
-                    MathChallengeMissionSubView(
-                        difficulty: alarm.mathDifficulty,
-                        problemCount: max(1, alarm.mathProblemCount),
-                        onProgress: registerMissionProgress,
-                        onComplete: completeMission
-                    )
-                case .none:
-                    VisionExerciseMissionSubView(
-                        mode: .pushups,
-                        repGoal: max(3, alarm.repGoal),
-                        onProgress: registerMissionProgress,
-                        onComplete: completeMission
+                    StepsMissionSubView(
+                        stepGoal: max(20, alarm.stepGoal),
+                        onStepIncremented: handleProgressUnitCompleted,
+                        onComplete: completeChallenge
                     )
                 }
             }
@@ -255,54 +235,69 @@ struct AlarmRingingView: View {
         }
     }
 
-    // MARK: - Watchdog Logic
+    // MARK: - Exact 20s Initial / 3.0s Inter-Rep Timer State Machine
 
-    private func startMissionFlow() {
-        hasStartedMission = true
-        missionSecondsRemaining = 20.0
-        secondsSinceLastProgress = 0.0
-        watchdogPenaltyReason = nil
-        alarmEngine.pauseSirenForMission()
+    private func startChallengeFromTap() {
+        hasStartedChallenge = true
+        hasCompletedFirstUnit = false
+        inactivityPenaltyActive = false
+        penaltyBannerText = nil
+        // Start 20.0s grace timer strictly from the exact moment "Do Challenge" is tapped
+        challengeStartDate = Date()
+        lastUnitCompletedDate = nil
+        countdownSecondsRemaining = 20.0
+        alarmEngine.silenceForChallenge()
     }
 
-    private func registerMissionProgress() {
-        secondsSinceLastProgress = 0.0
-        // If inactivity penalty was firing while time still remains, mute siren again as user resumed!
-        if missionSecondsRemaining > 0 && audioManager.isPenaltyBlastActive {
-            watchdogPenaltyReason = nil
-            alarmEngine.pauseSirenForMission()
+    private func handleProgressUnitCompleted(_ newCount: Int) {
+        hasCompletedFirstUnit = true
+        lastUnitCompletedDate = Date()
+        countdownSecondsRemaining = 3.0
+
+        // Instant silence & reset if inactivity penalty alarm was blasting!
+        if inactivityPenaltyActive {
+            inactivityPenaltyActive = false
+            penaltyBannerText = nil
+            alarmEngine.silenceForChallenge()
         }
     }
 
-    private func tickMissionWatchdog() {
-        if missionSecondsRemaining > 0 {
-            missionSecondsRemaining = max(0, missionSecondsRemaining - 0.1)
-        }
-        secondsSinceLastProgress += 0.1
+    private func tickChallengeTimers() {
+        let now = Date()
 
-        if missionSecondsRemaining <= 0 {
-            watchdogPenaltyReason = "20s WINDOW EXPIRED — 100% SIREN ACTIVE UNTIL COMPLETED!"
-            if !audioManager.isPenaltyBlastActive {
-                alarmEngine.triggerPenaltyBlast()
+        if !hasCompletedFirstUnit {
+            guard let start = challengeStartDate else { return }
+            let elapsed = now.timeIntervalSince(start)
+            countdownSecondsRemaining = max(0.0, 20.0 - elapsed)
+
+            if countdownSecondsRemaining <= 0.0 && !inactivityPenaltyActive {
+                triggerInactivityEscalation(
+                    message: "20s INITIAL GRACE EXPIRED — RAMPING 1%→50% (15s)! COMPLETE A \(alarm.missionType == .squats ? "SQUAT" : "STEP")!"
+                )
             }
-        } else if secondsSinceLastProgress > 3.0 {
-            watchdogPenaltyReason = "NO PROGRESS FOR >3s — MOVE NOW TO MUTE 100% SIREN!"
-            if !audioManager.isPenaltyBlastActive {
-                alarmEngine.triggerPenaltyBlast()
+        } else {
+            guard let lastUnit = lastUnitCompletedDate else { return }
+            let elapsed = now.timeIntervalSince(lastUnit)
+            countdownSecondsRemaining = max(0.0, 3.0 - elapsed)
+
+            if countdownSecondsRemaining <= 0.0 && !inactivityPenaltyActive {
+                triggerInactivityEscalation(
+                    message: "3s REP TIMER EXPIRED — RAMPING 1%→50% (15s)! COMPLETE NEXT \(alarm.missionType == .squats ? "SQUAT" : "STEP")!"
+                )
             }
         }
     }
 
-    private var resolvedTargetBarcode: String {
-        let trimmedCustom = alarm.customTargetBarcode.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !trimmedCustom.isEmpty {
-            return trimmedCustom
-        }
-        return SharedModelContainer.shared.registeredBarcode
+    private func triggerInactivityEscalation(message: String) {
+        inactivityPenaltyActive = true
+        penaltyBannerText = message
+        alarmEngine.startInactivityPenalty()
     }
 
     private func updateClockText() {
         let formatter = DateFormatter()
+        formatter.calendar = ISOWeekCalendar.current
+        formatter.timeZone = TimeZone.current
         formatter.dateFormat = "HH:mm:ss"
         currentTimeString = formatter.string(from: Date())
     }
@@ -312,19 +307,17 @@ struct AlarmRingingView: View {
         return String(format: "%02d:%02d", secs / 60, secs % 60)
     }
 
-    private func completeMission() {
-        let generator = UINotificationFeedbackGenerator()
-        generator.notificationOccurred(.success)
+    private func completeChallenge() {
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
         onDismissAlarm()
     }
 }
 
-// MARK: - 1. AI Camera Pushups / Squats Vision Mission
+// MARK: - 1. AI Vision Squats Mission
 
-private struct VisionExerciseMissionSubView: View {
-    let mode: VisionExerciseMode
+private struct SquatsMissionSubView: View {
     let repGoal: Int
-    let onProgress: () -> Void
+    let onRepCompleted: (Int) -> Void
     let onComplete: () -> Void
 
     @StateObject private var detector = VisionPoseDetector()
@@ -332,13 +325,12 @@ private struct VisionExerciseMissionSubView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            // Header & Live Rep Counter
             HStack(alignment: .center) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(mode.title)
+                    Text("AI SQUATS")
                         .font(.headline.weight(.black))
                         .foregroundStyle(.orange)
-                    Text("Phase: \(detector.phase.rawValue) • Angle: \(Int(detector.overlayState.activeAngleDegrees))°")
+                    Text("Phase: \(detector.phase.rawValue) • Knee: \(Int(detector.overlayState.kneeAngleDegrees))°")
                         .font(.caption.monospacedDigit().weight(.semibold))
                         .foregroundStyle(.cyan)
                 }
@@ -359,33 +351,18 @@ private struct VisionExerciseMissionSubView: View {
             .padding(.vertical, 10)
             .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
 
-            // Live Front Camera + Neon Skeleton Overlay
             ZStack {
-                BarcodeScannerCameraPreview(session: detector.captureSession)
+                CameraPreviewView(session: detector.captureSession)
                 PoseSkeletonOverlayView(state: detector.overlayState)
 
-                // Top Status Tag inside Camera
                 VStack {
                     HStack {
-                        Label("ON-DEVICE VISION", systemImage: "eye.fill")
+                        Label("ON-DEVICE VISION SQUATS", systemImage: "eye.fill")
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(.ultraThinMaterial, in: Capsule())
-
                         Spacer()
-
-                        if mode == .pushups {
-                            Text(detector.overlayState.torsoAligned ? "TORSO OK" : "ALIGN TORSO")
-                                .font(.caption2.weight(.black))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(
-                                    (detector.overlayState.torsoAligned ? Color.green : Color.orange).opacity(0.85),
-                                    in: Capsule()
-                                )
-                                .foregroundStyle(.black)
-                        }
                     }
                     .padding(10)
 
@@ -397,297 +374,142 @@ private struct VisionExerciseMissionSubView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity)
-                        .background(Color.black.opacity(0.72))
+                        .background(Color.black.opacity(0.75))
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: 18))
             .overlay(
                 RoundedRectangle(cornerRadius: 18)
-                    .stroke(detector.overlayState.torsoAligned ? Color.green.opacity(0.75) : Color.orange, lineWidth: 2)
+                    .stroke(Color.green.opacity(0.75), lineWidth: 2)
             )
 
-            // Progress Bar
             ProgressView(value: Double(min(detector.repCount, repGoal)), total: Double(max(1, repGoal)))
                 .tint(.green)
         }
         .onAppear {
-            detector.onProgressDetected = {
-                onProgress()
+            detector.onRepCompleted = { count in
+                onRepCompleted(count)
+                if count >= repGoal && !didComplete {
+                    didComplete = true
+                    detector.stop()
+                    onComplete()
+                }
             }
-            detector.start(mode: mode)
+            detector.startSquatDetection()
         }
         .onDisappear {
             detector.stop()
         }
-        .onChange(of: detector.repCount) { _, newCount in
-            if newCount >= repGoal && !didComplete {
-                didComplete = true
-                detector.stop()
-                onComplete()
-            }
-        }
     }
 }
 
-// MARK: - 2. QR / Barcode Scanner Dismissal Mission
+// MARK: - 2. CoreMotion Steps Mission
 
-private struct BarcodeScannerMissionSubView: View {
-    let targetCode: String
-    let targetLabel: String
-    let onProgress: () -> Void
-    let onComplete: () -> Void
-
-    @StateObject private var scannerVM = BarcodeScannerViewModel()
-    @State private var mismatchFeedback: String?
-    @State private var didComplete = false
-
-    var body: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 4) {
-                Label("QR / BARCODE MISSION", systemImage: "qrcode.viewfinder")
-                    .font(.headline.weight(.black))
-                    .foregroundStyle(.yellow)
-
-                Text("Scan: \(targetLabel)")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.white)
-
-                Text("Expected: \(targetCode)")
-                    .font(.caption.monospaced())
-                    .foregroundStyle(.white.opacity(0.7))
-            }
-
-            ZStack {
-                BarcodeScannerCameraPreview(session: scannerVM.captureSession)
-                    .clipShape(RoundedRectangle(cornerRadius: 18))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18)
-                            .stroke(Color.yellow.opacity(0.75), lineWidth: 2)
-                    )
-
-                RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(style: StrokeStyle(lineWidth: 3, dash: [12, 8]))
-                    .foregroundStyle(.yellow)
-                    .frame(width: 220, height: 150)
-
-                VStack {
-                    HStack {
-                        Spacer()
-                        Button {
-                            onProgress()
-                            scannerVM.toggleTorch()
-                        } label: {
-                            Label(
-                                scannerVM.isTorchOn ? "Light ON" : "Light",
-                                systemImage: scannerVM.isTorchOn ? "flashlight.on.fill" : "flashlight.off.fill"
-                            )
-                            .font(.caption.weight(.bold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(.ultraThinMaterial, in: Capsule())
-                        }
-                        .padding(12)
-                    }
-                    Spacer()
-                }
-            }
-
-            if let mismatchFeedback {
-                HStack(spacing: 6) {
-                    Image(systemName: "xmark.octagon.fill")
-                        .foregroundStyle(.red)
-                    Text(mismatchFeedback)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.red)
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Color.red.opacity(0.18), in: RoundedRectangle(cornerRadius: 10))
-            } else {
-                Text(scannerVM.statusText)
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.75))
-                    .multilineTextAlignment(.center)
-            }
-        }
-        .onAppear {
-            scannerVM.onCodeDetected = { scannedValue, _ in
-                guard !didComplete else { return }
-                onProgress()
-                let expected = targetCode.trimmingCharacters(in: .whitespacesAndNewlines)
-                if expected.isEmpty || scannedValue == expected {
-                    didComplete = true
-                    scannerVM.stopSession()
-                    onComplete()
-                } else {
-                    AudioServicesPlaySystemSound(kSystemSoundID_Vibrate)
-                    mismatchFeedback = "Scanned '\(scannedValue)' — expected '\(expected)'"
-                }
-            }
-            scannerVM.checkPermissionAndStart()
-        }
-        .onDisappear {
-            scannerVM.stopSession()
-        }
-    }
-}
-
-// MARK: - 3. Legacy Step Counter & Math Fallbacks
-
-private struct StepCounterMissionSubView: View {
+private struct StepsMissionSubView: View {
     let stepGoal: Int
-    let onProgress: () -> Void
+    let onStepIncremented: (Int) -> Void
     let onComplete: () -> Void
 
     @StateObject private var stepManager = StepCounterManager()
     @State private var didComplete = false
 
+    private var progress: Double {
+        guard stepGoal > 0 else { return 1.0 }
+        return min(1.0, Double(stepManager.currentSteps) / Double(stepGoal))
+    }
+
     var body: some View {
-        VStack(spacing: 20) {
-            Label("STEP COUNTER MISSION", systemImage: "figure.walk.motion")
-                .font(.headline.weight(.bold))
-                .foregroundStyle(.cyan)
+        VStack(spacing: 22) {
+            VStack(spacing: 4) {
+                Label("STEPS MISSION (COREMOTION)", systemImage: "figure.walk")
+                    .font(.headline.weight(.black))
+                    .foregroundStyle(.cyan)
+                Text("Walk \(stepGoal) steps to complete the wake challenge")
+                    .font(.subheadline)
+                    .foregroundStyle(.white.opacity(0.8))
+            }
 
             Spacer()
 
             ZStack {
                 Circle()
-                    .stroke(Color.white.opacity(0.14), lineWidth: 16)
-                    .frame(width: 200, height: 200)
-                Circle()
-                    .trim(from: 0, to: min(1.0, Double(stepManager.currentSteps) / Double(max(1, stepGoal))))
-                    .stroke(Color.green, style: StrokeStyle(lineWidth: 16, lineCap: .round))
-                    .rotationEffect(.degrees(-90))
-                    .frame(width: 200, height: 200)
+                    .stroke(Color.white.opacity(0.14), lineWidth: 18)
+                    .frame(width: 220, height: 220)
 
-                VStack {
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(
+                        AngularGradient(colors: [.cyan, .green, .mint], center: .center),
+                        style: StrokeStyle(lineWidth: 18, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 220, height: 220)
+                    .animation(.easeOut(duration: 0.2), value: stepManager.currentSteps)
+
+                VStack(spacing: 4) {
+                    Image(systemName: "shoeprints.fill")
+                        .font(.title2)
+                        .foregroundStyle(.mint)
+
                     Text("\(stepManager.currentSteps)")
-                        .font(.system(size: 48, weight: .black, design: .rounded))
+                        .font(.system(size: 52, weight: .black, design: .rounded))
                         .monospacedDigit()
-                    Text("of \(stepGoal) steps")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.white)
+
+                    Text("/ \(stepGoal) steps")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.75))
                 }
             }
+
+            ProgressView(value: progress, total: 1.0)
+                .tint(.green)
+                .padding(.horizontal, 12)
+
+            HStack(spacing: 28) {
+                VStack(spacing: 2) {
+                    Text(String(format: "%.1f m", stepManager.distanceMeters))
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(.white)
+                    Text("Distance")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+
+                VStack(spacing: 2) {
+                    Text("\(max(0, stepGoal - stepManager.currentSteps))")
+                        .font(.headline.monospacedDigit())
+                        .foregroundStyle(.orange)
+                    Text("Remaining")
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.65))
+                }
+            }
+            .padding(.vertical, 10)
+            .padding(.horizontal, 26)
+            .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+
+            Text(stepManager.statusMessage)
+                .font(.caption)
+                .foregroundStyle(.white.opacity(0.7))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal)
 
             Spacer()
         }
-        .onAppear { stepManager.startTracking() }
-        .onDisappear { stepManager.stopTracking() }
-        .onChange(of: stepManager.currentSteps) { _, newValue in
-            onProgress()
-            if newValue >= stepGoal && !didComplete {
-                didComplete = true
-                stepManager.stopTracking()
-                onComplete()
-            }
-        }
-    }
-}
-
-private struct MathProblem {
-    let expressionText: String
-    let correctAnswer: Int
-
-    static func generate(difficulty: MathDifficulty) -> MathProblem {
-        switch difficulty {
-        case .easy:
-            let a = Int.random(in: 3...9), b = Int.random(in: 3...9), c = Int.random(in: 10...35)
-            return MathProblem(expressionText: "(\(a) × \(b)) + \(c)", correctAnswer: (a * b) + c)
-        case .medium:
-            let a = Int.random(in: 11...19), b = Int.random(in: 4...9), c = Int.random(in: 15...65)
-            return MathProblem(expressionText: "(\(a) × \(b)) + \(c)", correctAnswer: (a * b) + c)
-        case .hard:
-            let a = Int.random(in: 13...28), b = Int.random(in: 11...19), c = Int.random(in: 45...180)
-            return MathProblem(expressionText: "(\(a) × \(b)) + \(c)", correctAnswer: (a * b) + c)
-        }
-    }
-}
-
-private struct MathChallengeMissionSubView: View {
-    let difficulty: MathDifficulty
-    let problemCount: Int
-    let onProgress: () -> Void
-    let onComplete: () -> Void
-
-    @State private var currentProblemIndex: Int = 0
-    @State private var currentProblem: MathProblem = MathProblem(expressionText: "(7 × 8) + 14", correctAnswer: 70)
-    @State private var userInput: String = ""
-    @State private var errorFeedback: Bool = false
-
-    private let keypadRows: [[String]] = [["1", "2", "3"], ["4", "5", "6"], ["7", "8", "9"], ["CLR", "0", "⌫"]]
-
-    var body: some View {
-        VStack(spacing: 14) {
-            HStack {
-                Label("MATH MISSION", systemImage: "function")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(.orange)
-                Spacer()
-                Text("Problem \(currentProblemIndex + 1) / \(problemCount)")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.orange)
-            }
-
-            Text(currentProblem.expressionText)
-                .font(.system(size: 32, weight: .bold, design: .rounded))
-
-            Text(userInput.isEmpty ? "?" : userInput)
-                .font(.system(size: 30, weight: .heavy, design: .monospaced))
-                .foregroundStyle(errorFeedback ? .red : .cyan)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 12))
-
-            VStack(spacing: 8) {
-                ForEach(keypadRows, id: \.self) { row in
-                    HStack(spacing: 8) {
-                        ForEach(row, id: \.self) { key in
-                            Button {
-                                onProgress()
-                                errorFeedback = false
-                                switch key {
-                                case "CLR": userInput = ""
-                                case "⌫": if !userInput.isEmpty { userInput.removeLast() }
-                                default: if userInput.count < 7 { userInput.append(key) }
-                                }
-                            } label: {
-                                Text(key)
-                                    .font(.title3.weight(.bold))
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 46)
-                                    .background(Color.white.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
-                            }
-                        }
-                    }
-                }
-
-                Button {
-                    onProgress()
-                    if let val = Int(userInput), val == currentProblem.correctAnswer {
-                        userInput = ""
-                        if currentProblemIndex + 1 >= problemCount {
-                            onComplete()
-                        } else {
-                            currentProblemIndex += 1
-                            currentProblem = MathProblem.generate(difficulty: difficulty)
-                        }
-                    } else {
-                        errorFeedback = true
-                        userInput = ""
-                    }
-                } label: {
-                    Text("SUBMIT")
-                        .font(.headline.weight(.bold))
-                        .foregroundStyle(.black)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 48)
-                        .background(Color.orange, in: RoundedRectangle(cornerRadius: 12))
-                }
-            }
-        }
         .onAppear {
-            currentProblem = MathProblem.generate(difficulty: difficulty)
+            stepManager.onStepIncremented = { count in
+                onStepIncremented(count)
+                if count >= stepGoal && !didComplete {
+                    didComplete = true
+                    stepManager.stopTracking()
+                    onComplete()
+                }
+            }
+            stepManager.startTracking()
+        }
+        .onDisappear {
+            stepManager.stopTracking()
         }
     }
 }

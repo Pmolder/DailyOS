@@ -10,6 +10,9 @@ final class StepCounterManager: ObservableObject {
     @Published private(set) var isTracking: Bool = false
     @Published private(set) var statusMessage: String = "Ready to track steps"
 
+    /// Fires whenever live step count increases (feeds the 20s initial / 3s inter-step challenge timer).
+    var onStepIncremented: ((Int) -> Void)?
+
     private let pedometer = CMPedometer()
     private let motionManager = CMMotionManager()
     private var sessionStartDate: Date?
@@ -17,6 +20,23 @@ final class StepCounterManager: ObservableObject {
 
     init() {
         isHardwareAvailable = CMPedometer.isStepCountingAvailable()
+    }
+
+    static var authorizationStatusText: String {
+        switch CMPedometer.authorizationStatus() {
+        case .authorized: return "Authorized"
+        case .denied: return "Denied"
+        case .restricted: return "Restricted"
+        case .notDetermined: return "Not Requested"
+        @unknown default: return "Unknown"
+        }
+    }
+
+    /// Prompts CoreMotion authorization cleanly via a lightweight pedometer query.
+    func requestPermissionIfNeeded() {
+        guard CMPedometer.isStepCountingAvailable() else { return }
+        let now = Date()
+        pedometer.queryPedometerData(from: now.addingTimeInterval(-60), to: now) { _, _ in }
     }
 
     func startTracking() {
@@ -29,7 +49,7 @@ final class StepCounterManager: ObservableObject {
         isHardwareAvailable = CMPedometer.isStepCountingAvailable()
 
         if isHardwareAvailable {
-            statusMessage = "Live CoreMotion CMPedometer active — start walking!"
+            statusMessage = "CoreMotion CMPedometer active — start walking!"
             pedometer.startUpdates(from: start) { [weak self] data, error in
                 let errDesc = error?.localizedDescription
                 let stepsValue = data?.numberOfSteps.intValue
@@ -42,16 +62,17 @@ final class StepCounterManager: ObservableObject {
                         self.startAccelerometerFallbackIfNeeded()
                         return
                     }
-                    if let stepsValue {
-                        self.currentSteps = max(self.currentSteps, stepsValue)
+                    if let stepsValue, stepsValue > self.currentSteps {
+                        self.currentSteps = stepsValue
                         if let distanceValue {
                             self.distanceMeters = distanceValue
                         }
+                        self.onStepIncremented?(stepsValue)
                     }
                 }
             }
         } else {
-            statusMessage = "CMPedometer hardware unavailable — using CoreMotion accelerometer step detector."
+            statusMessage = "CMPedometer unavailable — using CoreMotion accelerometer step detector."
             startAccelerometerFallbackIfNeeded()
         }
     }
@@ -71,11 +92,11 @@ final class StepCounterManager: ObservableObject {
             let now = ProcessInfo.processInfo.systemUptime
             Task { @MainActor [weak self] in
                 guard let self, self.isTracking else { return }
-                // Detect walking step cadence peak (> 1.32G with minimum 0.30s debounce between steps)
                 if magnitude > 1.32 && (now - self.lastStepPeakTimestamp) > 0.30 {
                     self.lastStepPeakTimestamp = now
                     self.currentSteps += 1
                     self.distanceMeters = Double(self.currentSteps) * 0.72
+                    self.onStepIncremented?(self.currentSteps)
                 }
             }
         }

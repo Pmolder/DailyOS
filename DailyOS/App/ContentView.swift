@@ -32,10 +32,11 @@ struct ContentView: View {
         }
         .tint(.orange)
         .preferredColorScheme(.dark)
+        .environment(\.calendar, ISOWeekCalendar.current)
         .sheet(isPresented: $showingSettingsSheet) {
             SettingsView()
         }
-        // Locked full-screen Wake nuclear alarm cover (highest priority)
+        // Locked full-screen Wake Alarm cover (highest priority)
         .fullScreenCover(
             item: Binding(
                 get: { alarmEngine.activeRingingAlarm },
@@ -46,34 +47,29 @@ struct ContentView: View {
                 alarmEngine.dismissActiveAlarm()
             }
         }
-        // Live camera-only Focus AI Photo Proof modal (when Wake alarm is not actively ringing)
+        // Un-dismissible full-screen Focus Task Check-In Alarm / Evasion Penalty cover
         .fullScreenCover(
             isPresented: Binding(
-                get: { focusManager.isPhotoCaptureModalPresented && !alarmEngine.isAlarmRinging },
-                set: { newValue in
-                    if !newValue {
-                        focusManager.cancelPhotoCaptureWithoutSubmitting()
-                    }
-                }
+                get: { focusManager.isFocusAlarmFullScreenPresented && !alarmEngine.isAlarmRinging },
+                set: { _ in }
             )
         ) {
-            FocusPhotoProofModalView()
+            FocusTaskAlarmFullScreenView()
         }
         .task {
+            SystemVolumeController.shared.ensureMountedInKeyWindow()
             _ = await notificationScheduler.requestAuthorizationIfNeeded()
             alarmEngine.syncWithAlarms()
-            focusManager.refreshTodaySchedule()
+            focusManager.handleAppReopenCheck()
+            await focusManager.syncAllSources()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                SystemVolumeController.shared.ensureMountedInKeyWindow()
                 alarmEngine.refreshGuidedAccessStatus()
                 alarmEngine.syncWithAlarms()
-                focusManager.refreshTodaySchedule()
-            }
-        }
-        .onChange(of: focusManager.isCheckInDue) { _, isDue in
-            if isDue && !alarmEngine.isAlarmRinging {
-                selectedTab = 2
+                focusManager.handleAppReopenCheck()
+                Task { await focusManager.syncAllSources() }
             }
         }
     }

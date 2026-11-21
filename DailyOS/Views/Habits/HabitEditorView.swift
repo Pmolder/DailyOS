@@ -13,7 +13,7 @@ struct HabitEditorView: View {
     @State private var timeOfDay: HabitTimeOfDay = .morning
     @State private var reminderEnabled: Bool = false
     @State private var reminderTime: Date = Date()
-    @State private var repeatDays: Set<Int> = [1, 2, 3, 4, 5, 6, 7]
+    @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6, 7, 1]
     @State private var soundOption: NotificationSoundOption = .chimeBell
 
     private let availableIcons: [String] = [
@@ -72,7 +72,7 @@ struct HabitEditorView: View {
                     .padding(.vertical, 4)
                 }
 
-                Section("Schedule & Optional Reminder") {
+                Section("Schedule (Mon–Sun) & Optional Reminder") {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack {
                             Text("Scheduled Days")
@@ -148,6 +148,7 @@ struct HabitEditorView: View {
                         dismiss()
                     }
                     .fontWeight(.bold)
+                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
             .onAppear(perform: loadInitialValues)
@@ -158,7 +159,7 @@ struct HabitEditorView: View {
     }
 
     private func loadInitialValues() {
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         if let habit = habitToEdit {
             title = habit.title
             notes = habit.notes
@@ -177,16 +178,17 @@ struct HabitEditorView: View {
             comps.hour = 9
             comps.minute = 0
             reminderTime = calendar.date(from: comps) ?? Date()
+            title = ""
+            notes = ""
         }
     }
 
     private func saveHabit() {
-        let comps = Calendar.current.dateComponents([.hour, .minute], from: reminderTime)
+        let comps = ISOWeekCalendar.current.dateComponents([.hour, .minute], from: reminderTime)
         let hour = comps.hour ?? 9
         let minute = comps.minute ?? 0
-        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "Daily Habit"
-            : title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty else { return }
 
         if let habit = habitToEdit {
             habit.title = cleanTitle
@@ -198,7 +200,6 @@ struct HabitEditorView: View {
             habit.reminderMinute = minute
             habit.repeatDays = repeatDays
             habit.soundOption = soundOption
-            habit.requiresPhotoProof = false
         } else {
             let existingInSegment = SharedModelContainer.shared.fetchHabits()
                 .filter { $0.timeOfDay == timeOfDay }
@@ -214,8 +215,7 @@ struct HabitEditorView: View {
                 reminderHour: hour,
                 reminderMinute: minute,
                 repeatDays: repeatDays,
-                soundOption: soundOption,
-                requiresPhotoProof: false
+                soundOption: soundOption
             )
             modelContext.insert(newHabit)
         }

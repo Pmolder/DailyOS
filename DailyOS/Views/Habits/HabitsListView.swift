@@ -35,11 +35,10 @@ struct HabitsListView: View {
     var body: some View {
         NavigationStack {
             List {
-                // 1. Daily Accuracy Ring & Analytics Header
+                // 1. Daily Accuracy Ring & 12-Week Monday-First Heatmap
                 Section {
                     VStack(spacing: 14) {
                         HStack(spacing: 18) {
-                            // Animated Daily Accuracy Ring
                             ZStack {
                                 Circle()
                                     .stroke(Color.white.opacity(0.12), lineWidth: 10)
@@ -81,7 +80,7 @@ struct HabitsListView: View {
 
                         Divider()
 
-                        // 12-Week GitHub-Style Consistency Heatmap Grid
+                        // ISO-8601 Monday-First 12-Week Consistency Heatmap Grid
                         ConsistencyHeatmapView(
                             habits: habits,
                             selectedDate: $selectedHeatmapDate
@@ -90,58 +89,68 @@ struct HabitsListView: View {
                     .padding(.vertical, 6)
                 }
 
-                // 2. Time-of-Day Segmented Habit Lists (Morning, Day, Evening)
-                ForEach(HabitTimeOfDay.allCases) { segment in
-                    let segmentHabits = habitsForSegment(segment)
-
+                // 2. Clean Empty State or Morning / Day / Evening Segments
+                if habits.isEmpty {
                     Section {
-                        if segmentHabits.isEmpty {
-                            HStack {
-                                Text("No \(segment.displayName.lowercased()) habits yet")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                Button("Add") {
-                                    showingCreateSheet = true
-                                }
-                                .font(.caption.weight(.bold))
-                            }
-                        } else {
-                            ForEach(segmentHabits) { habit in
-                                SegmentedHabitRowView(
-                                    habit: habit,
-                                    onQuickCheck: {
-                                        impactFeedback.impactOccurred()
-                                        habit.toggleCompletion(on: Date())
-                                        SharedModelContainer.shared.save()
-                                        Task {
-                                            await notificationScheduler.rescheduleAll()
-                                        }
-                                    },
-                                    onTapEdit: {
-                                        editingHabit = habit
+                        ContentUnavailableView(
+                            "No Habits Yet",
+                            systemImage: "square.grid.3x3.fill",
+                            description: Text("Tap + to add Morning, Day, or Evening habits and build your 12-week consistency grid.")
+                        )
+                    }
+                } else {
+                    ForEach(HabitTimeOfDay.allCases) { segment in
+                        let segmentHabits = habitsForSegment(segment)
+
+                        Section {
+                            if segmentHabits.isEmpty {
+                                HStack {
+                                    Text("No \(segment.displayName.lowercased()) habits")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("Add") {
+                                        showingCreateSheet = true
                                     }
-                                )
+                                    .font(.caption.weight(.bold))
+                                }
+                            } else {
+                                ForEach(segmentHabits) { habit in
+                                    SegmentedHabitRowView(
+                                        habit: habit,
+                                        onQuickCheck: {
+                                            impactFeedback.impactOccurred()
+                                            habit.toggleCompletion(on: Date())
+                                            SharedModelContainer.shared.save()
+                                            Task {
+                                                await notificationScheduler.rescheduleAll()
+                                            }
+                                        },
+                                        onTapEdit: {
+                                            editingHabit = habit
+                                        }
+                                    )
+                                }
+                                .onMove { source, destination in
+                                    moveHabits(in: segment, from: source, to: destination)
+                                }
+                                .onDelete { offsets in
+                                    deleteHabits(in: segment, at: offsets)
+                                }
                             }
-                            .onMove { source, destination in
-                                moveHabits(in: segment, from: source, to: destination)
+                        } header: {
+                            HStack(spacing: 6) {
+                                Image(systemName: segment.iconName)
+                                    .foregroundStyle(colorForSegment(segment))
+                                Text(segment.displayName)
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(.white)
+                                Spacer()
+                                let doneCount = segmentHabits.filter { $0.isCompleted(on: Date()) }.count
+                                Text("\(doneCount)/\(segmentHabits.count)")
+                                    .font(.caption2.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(.secondary)
                             }
-                            .onDelete { offsets in
-                                deleteHabits(in: segment, at: offsets)
-                            }
-                        }
-                    } header: {
-                        HStack(spacing: 6) {
-                            Image(systemName: segment.iconName)
-                                .foregroundStyle(colorForSegment(segment))
-                            Text(segment.displayName)
-                                .font(.subheadline.weight(.bold))
-                                .foregroundStyle(.white)
-                            Spacer()
-                            let doneCount = segmentHabits.filter { $0.isCompleted(on: Date()) }.count
-                            Text("\(doneCount)/\(segmentHabits.count)")
-                                .font(.caption2.monospacedDigit().weight(.bold))
-                                .foregroundStyle(.secondary)
                         }
                     }
                 }
@@ -156,7 +165,9 @@ struct HabitsListView: View {
                     .accessibilityLabel("Settings and Backup")
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    EditButton()
+                    if !habits.isEmpty {
+                        EditButton()
+                    }
                     Button {
                         showingCreateSheet = true
                     } label: {
@@ -235,7 +246,7 @@ struct HabitsListView: View {
     }
 }
 
-// MARK: - Segmented Habit Row (One-Tap Checkoff + 7d / 30d / All-Time Accuracy)
+// MARK: - Segmented Habit Row
 
 private struct SegmentedHabitRowView: View {
     let habit: HabitItem
@@ -248,7 +259,6 @@ private struct SegmentedHabitRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // Simple 1-tap checkoff circle (no camera proof required on Habits tab)
             Button(action: onQuickCheck) {
                 ZStack {
                     Circle()
@@ -272,7 +282,6 @@ private struct SegmentedHabitRowView: View {
             }
             .buttonStyle(.plain)
 
-            // Habit Details + Accuracy Metrics
             Button(action: onTapEdit) {
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
@@ -293,7 +302,6 @@ private struct SegmentedHabitRowView: View {
                         }
                     }
 
-                    // Per-habit 7-day, 30-day, and all-time completion percentages
                     HStack(spacing: 8) {
                         statTag("7d", habit.completionRate(lastDays: 7))
                         statTag("30d", habit.completionRate(lastDays: 30))
@@ -323,7 +331,7 @@ private struct SegmentedHabitRowView: View {
     }
 }
 
-// MARK: - 12-Week GitHub-Style Consistency Heatmap Grid
+// MARK: - ISO-8601 Monday-First 12-Week Consistency Heatmap Grid
 
 private struct ConsistencyHeatmapView: View {
     let habits: [HabitItem]
@@ -331,16 +339,16 @@ private struct ConsistencyHeatmapView: View {
 
     private let weeksCount = 12
     private let daysPerWeek = 7
+    private let mondayFirstLetters = ["M", "T", "W", "T", "F", "S", "S"]
 
-    /// Builds a 12x7 grid of dates ending on today (column-major: 12 weeks, 7 days per week).
+    /// Builds a 12-week ISO-8601 Monday-first grid ending on today.
+    /// Row 0 = Monday, ..., Row 6 = Sunday.
     private var gridWeeks: [[Date?]] {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let todayWeekday = calendar.component(.weekday, from: today) // 1 = Sun ... 7 = Sat
-        let daysFromStartOfCurrentWeek = todayWeekday - 1
-        let totalDaysBack = (weeksCount - 1) * 7 + daysFromStartOfCurrentWeek
+        let cal = ISOWeekCalendar.current
+        let today = cal.startOfDay(for: Date())
+        let currentMonday = ISOWeekCalendar.startOfMondayWeek(for: today)
 
-        guard let gridStart = calendar.date(byAdding: .day, value: -totalDaysBack, to: today) else {
+        guard let firstMonday = cal.date(byAdding: .day, value: -(weeksCount - 1) * 7, to: currentMonday) else {
             return []
         }
 
@@ -349,7 +357,7 @@ private struct ConsistencyHeatmapView: View {
             var weekDays: [Date?] = []
             for dayIdx in 0..<daysPerWeek {
                 let offset = weekIdx * 7 + dayIdx
-                if let cellDate = calendar.date(byAdding: .day, value: offset, to: gridStart),
+                if let cellDate = cal.date(byAdding: .day, value: offset, to: firstMonday),
                    cellDate <= today {
                     weekDays.append(cellDate)
                 } else {
@@ -364,7 +372,7 @@ private struct ConsistencyHeatmapView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("12-Week Consistency Grid")
+                Text("12-Week Consistency (Mon–Sun)")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.white.opacity(0.85))
                 Spacer()
@@ -374,16 +382,15 @@ private struct ConsistencyHeatmapView: View {
                         .font(.caption2.monospacedDigit().weight(.semibold))
                         .foregroundStyle(.green)
                 } else {
-                    Text("Tap a square for day details")
+                    Text("Tap square for day")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
 
             HStack(alignment: .top, spacing: 4) {
-                // Weekday labels column
                 VStack(spacing: 4) {
-                    ForEach(Array(["S", "M", "T", "W", "T", "F", "S"].enumerated()), id: \.offset) { _, letter in
+                    ForEach(Array(mondayFirstLetters.enumerated()), id: \.offset) { _, letter in
                         Text(letter)
                             .font(.system(size: 8, weight: .bold, design: .monospaced))
                             .foregroundStyle(.secondary)
@@ -391,14 +398,13 @@ private struct ConsistencyHeatmapView: View {
                     }
                 }
 
-                // 12 Week Columns
                 HStack(spacing: 4) {
                     ForEach(0..<gridWeeks.count, id: \.self) { weekIndex in
                         VStack(spacing: 4) {
                             ForEach(0..<daysPerWeek, id: \.self) { dayIndex in
                                 if let cellDate = gridWeeks[weekIndex][dayIndex] {
                                     let summary = HabitItem.dailyCompletionSummary(habits: habits, on: cellDate)
-                                    let isSelected = selectedDate.map { Calendar.current.isDate($0, inSameDayAs: cellDate) } ?? false
+                                    let isSelected = selectedDate.map { ISOWeekCalendar.current.isDate($0, inSameDayAs: cellDate) } ?? false
 
                                     RoundedRectangle(cornerRadius: 3)
                                         .fill(intensityColor(for: summary.ratio))
@@ -423,7 +429,6 @@ private struct ConsistencyHeatmapView: View {
                 }
             }
 
-            // Legend
             HStack(spacing: 5) {
                 Spacer()
                 Text("Less")

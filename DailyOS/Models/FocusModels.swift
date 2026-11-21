@@ -1,7 +1,36 @@
 import Foundation
 import SwiftData
 
-// MARK: - SwiftData Manual Focus Block Model
+// MARK: - Focus Task Source
+
+enum FocusBlockSource: String, Codable, CaseIterable, Identifiable {
+    case local = "local"
+    case googleCalendar = "google_calendar"
+    case googleTasks = "google_tasks"
+    case appleCalendar = "apple_calendar"
+
+    var id: String { rawValue }
+
+    var badgeTitle: String {
+        switch self {
+        case .local: return "Local"
+        case .googleCalendar: return "Google Calendar"
+        case .googleTasks: return "Google Tasks"
+        case .appleCalendar: return "Apple Calendar"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .local: return "calendar.badge.plus"
+        case .googleCalendar: return "g.circle.fill"
+        case .googleTasks: return "checkmark.circle.badge.questionmark"
+        case .appleCalendar: return "apple.logo"
+        }
+    }
+}
+
+// MARK: - SwiftData Local Scheduled Focus Task Model (Supports Any Future Date & Time)
 
 @Model
 final class ManualFocusBlock {
@@ -15,7 +44,7 @@ final class ManualFocusBlock {
 
     init(
         id: UUID = UUID(),
-        title: String,
+        title: String = "",
         notes: String = "",
         startDate: Date = Date(),
         endDate: Date = Date().addingTimeInterval(60 * 60),
@@ -67,17 +96,30 @@ final class FocusCheckInLog {
     }
 }
 
-// MARK: - Unified Focus Block Display Model (Calendar + Manual)
+// MARK: - Unified Multi-Day Focus Schedule Item
 
 struct FocusBlockDisplayItem: Identifiable, Equatable {
     let id: String
     let title: String
     let notes: String
     let calendarTitle: String
+    let source: FocusBlockSource
     let startDate: Date
     let endDate: Date
-    let isManual: Bool
     let manualBlockID: UUID?
+
+    var durationMinutes: Double {
+        max(1.0, endDate.timeIntervalSince(startDate) / 60.0)
+    }
+
+    /// Tasks longer than 35 minutes require recurring 30-minute check-ins after the initial 5-minute proof.
+    var requiresRecurringCheckIns: Bool {
+        durationMinutes > 35.0
+    }
+
+    var isManual: Bool {
+        source == .local && manualBlockID != nil
+    }
 
     func isOngoing(at date: Date = Date()) -> Bool {
         startDate <= date && endDate > date
@@ -85,20 +127,26 @@ struct FocusBlockDisplayItem: Identifiable, Equatable {
 
     var timeRangeText: String {
         let formatter = DateFormatter()
+        formatter.calendar = ISOWeekCalendar.current
+        formatter.timeZone = TimeZone.current
         formatter.dateFormat = "HH:mm"
         return "\(formatter.string(from: startDate)) – \(formatter.string(from: endDate))"
+    }
+
+    var dayKey: String {
+        HabitItem.dateKey(for: startDate)
     }
 }
 
 // MARK: - JSON Backup DTOs (SideStore Weekly Re-Install Protection)
 
 struct DailyOSBackupPayload: Codable {
-    var schemaVersion: Int = 2
+    var schemaVersion: Int = 3
     var exportedAt: Date = Date()
-    var registeredBarcode: String
-    var registeredBarcodeLabel: String
-    var trackedCalendarIDs: [String]
-    var focusCheckInIntervalMinutes: Int
+    var trackedAppleCalendarIDs: [String]
+    var appleCalendarSyncEnabled: Bool
+    var googleCalendarSyncEnabled: Bool
+    var googleTasksSyncEnabled: Bool
     var offlineVisionFallbackEnabled: Bool
     var alarms: [AlarmBackupDTO]
     var habits: [HabitBackupDTO]
@@ -117,9 +165,6 @@ struct AlarmBackupDTO: Codable {
     var missionTypeRaw: String
     var repGoal: Int
     var stepGoal: Int
-    var mathDifficultyRaw: String
-    var mathProblemCount: Int
-    var customTargetBarcode: String
     var createdAt: Date
 }
 

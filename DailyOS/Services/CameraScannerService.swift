@@ -14,152 +14,7 @@ final class CameraPreviewUIView: UIView {
     }
 }
 
-// MARK: - 1. Live QR / Barcode Scanner (AVFoundation)
-
-@MainActor
-final class BarcodeScannerViewModel: NSObject, ObservableObject, AVCaptureMetadataOutputObjectsDelegate {
-    @Published var lastScannedCode: String = ""
-    @Published var lastSymbology: String = ""
-    @Published var isTorchOn: Bool = false
-    @Published var cameraPermissionGranted: Bool = false
-    @Published var statusText: String = "Initializing camera..."
-
-    let captureSession = AVCaptureSession()
-    private let sessionQueue = DispatchQueue(label: "com.patrik.dailyos.barcodescanner.queue")
-    private var isConfigured = false
-    var onCodeDetected: ((String, String) -> Void)?
-
-    func checkPermissionAndStart() {
-        let status = AVCaptureDevice.authorizationStatus(for: .video)
-        switch status {
-        case .authorized:
-            cameraPermissionGranted = true
-            startSession()
-        case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    self.cameraPermissionGranted = granted
-                    if granted {
-                        self.startSession()
-                    } else {
-                        self.statusText = "Camera permission denied. Enable Camera in iOS Settings."
-                    }
-                }
-            }
-        default:
-            cameraPermissionGranted = false
-            statusText = "Camera access is denied or restricted."
-        }
-    }
-
-    private func startSession() {
-        statusText = "Point camera at target QR code or barcode"
-        let session = captureSession
-        let alreadyConfigured = isConfigured
-        sessionQueue.async { [weak self] in
-            guard let self else { return }
-            if !alreadyConfigured {
-                self.configureSession(session)
-            }
-            if !session.isRunning {
-                session.startRunning()
-            }
-        }
-    }
-
-    nonisolated private func configureSession(_ session: AVCaptureSession) {
-        session.beginConfiguration()
-        session.sessionPreset = .high
-
-        guard let videoDevice = AVCaptureDevice.default(for: .video),
-              let videoInput = try? AVCaptureDeviceInput(device: videoDevice),
-              session.canAddInput(videoInput) else {
-            session.commitConfiguration()
-            Task { @MainActor [weak self] in
-                self?.statusText = "No physical camera detected on this device."
-            }
-            return
-        }
-        session.addInput(videoInput)
-
-        let metadataOutput = AVCaptureMetadataOutput()
-        if session.canAddOutput(metadataOutput) {
-            session.addOutput(metadataOutput)
-            metadataOutput.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-
-            let desiredTypes: [AVMetadataObject.ObjectType] = [
-                .qr,
-                .ean13,
-                .ean8,
-                .upce,
-                .code128,
-                .code39,
-                .code93,
-                .itf14,
-                .pdf417,
-                .aztec,
-                .dataMatrix
-            ]
-            let supported = metadataOutput.availableMetadataObjectTypes
-            metadataOutput.metadataObjectTypes = desiredTypes.filter { supported.contains($0) }
-        }
-
-        session.commitConfiguration()
-        Task { @MainActor [weak self] in
-            self?.isConfigured = true
-        }
-    }
-
-    func stopSession() {
-        if isTorchOn {
-            setTorch(enabled: false)
-        }
-        let session = captureSession
-        sessionQueue.async {
-            if session.isRunning {
-                session.stopRunning()
-            }
-        }
-    }
-
-    func toggleTorch() {
-        setTorch(enabled: !isTorchOn)
-    }
-
-    private func setTorch(enabled: Bool) {
-        guard let device = AVCaptureDevice.default(for: .video), device.hasTorch else { return }
-        do {
-            try device.lockForConfiguration()
-            device.torchMode = enabled ? .on : .off
-            device.unlockForConfiguration()
-            isTorchOn = enabled
-        } catch {
-            print("[BarcodeScanner] Torch error: \(error.localizedDescription)")
-        }
-    }
-
-    nonisolated func metadataOutput(
-        _ output: AVCaptureMetadataOutput,
-        didOutput metadataObjects: [AVMetadataObject],
-        from connection: AVCaptureConnection
-    ) {
-        guard let readableObject = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-              let stringValue = readableObject.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !stringValue.isEmpty else {
-            return
-        }
-        let symbology = readableObject.type.rawValue
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.lastScannedCode = stringValue
-            self.lastSymbology = symbology
-            self.onCodeDetected?(stringValue, symbology)
-        }
-    }
-}
-
-struct BarcodeScannerCameraPreview: UIViewRepresentable {
+struct CameraPreviewView: UIViewRepresentable {
     let session: AVCaptureSession
 
     func makeUIView(context: Context) -> CameraPreviewUIView {
@@ -177,7 +32,7 @@ struct BarcodeScannerCameraPreview: UIViewRepresentable {
     }
 }
 
-// MARK: - 2. Live Photo Proof Camera (AVCapturePhotoOutput - No Photo Library)
+// MARK: - Live Photo Proof Camera (AVCapturePhotoOutput - No Photo Library)
 
 @MainActor
 final class LivePhotoCaptureViewModel: NSObject, ObservableObject, AVCapturePhotoCaptureDelegate {
@@ -185,7 +40,7 @@ final class LivePhotoCaptureViewModel: NSObject, ObservableObject, AVCapturePhot
     @Published var cameraPermissionGranted: Bool = false
     @Published var isHardwareCameraAvailable: Bool = true
     @Published var isCapturing: Bool = false
-    @Published var statusMessage: String = "Position subject in frame"
+    @Published var statusMessage: String = "Position task workspace in frame"
     @Published var usingFrontCamera: Bool = false
 
     let captureSession = AVCaptureSession()
@@ -206,7 +61,7 @@ final class LivePhotoCaptureViewModel: NSObject, ObservableObject, AVCapturePhot
                     if granted {
                         self.configureAndStartSession(frontCamera: self.usingFrontCamera)
                     } else {
-                        self.statusMessage = "Camera permission is required for Photo Proof."
+                        self.statusMessage = "Camera permission is required for live photo proof."
                     }
                 }
             }
@@ -257,7 +112,7 @@ final class LivePhotoCaptureViewModel: NSObject, ObservableObject, AVCapturePhot
 
             Task { @MainActor [weak self] in
                 self?.isHardwareCameraAvailable = true
-                self?.statusMessage = "Live camera active — tap shutter to capture proof"
+                self?.statusMessage = "Live camera active — tap shutter to submit proof"
             }
         }
     }
@@ -271,7 +126,6 @@ final class LivePhotoCaptureViewModel: NSObject, ObservableObject, AVCapturePhot
         guard !isCapturing else { return }
 
         if !isHardwareCameraAvailable {
-            // Fallback timestamped proof card only if running on a Simulator without camera hardware
             capturedImage = renderTimestampedFallbackImage()
             return
         }
@@ -348,11 +202,11 @@ final class LivePhotoCaptureViewModel: NSObject, ObservableObject, AVCapturePhot
             formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
             let timestamp = formatter.string(from: Date())
 
-            "DAILYOS LIVE PROOF CAPTURE".draw(
+            "DAILYOS LIVE PROOF".draw(
                 in: CGRect(x: 40, y: 380, width: size.width - 80, height: 60),
                 withAttributes: titleAttrs
             )
-            "Verified Timestamp:\n\(timestamp)".draw(
+            "Timestamp:\n\(timestamp)".draw(
                 in: CGRect(x: 40, y: 460, width: size.width - 80, height: 100),
                 withAttributes: subAttrs
             )

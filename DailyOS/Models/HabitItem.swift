@@ -77,15 +77,6 @@ enum NotificationSoundOption: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-// MARK: - Photo Proof Record
-
-struct PhotoProofRecord: Codable, Identifiable, Equatable {
-    var id: UUID = UUID()
-    var dateString: String
-    var fileName: String
-    var capturedAt: Date
-}
-
 // MARK: - SwiftData Habit Model
 
 @Model
@@ -101,27 +92,23 @@ final class HabitItem {
     var reminderMinute: Int
     var repeatDaysRaw: String
     var soundOptionRaw: String
-    var requiresPhotoProof: Bool
     var completedDatesRaw: String
-    var photoProofsData: Data?
     var snoozedUntil: Date?
     var createdAt: Date
 
     init(
         id: UUID = UUID(),
-        title: String = "Morning Hydration",
-        notes: String = "Drink 500ml of water right after waking up",
-        iconName: String = "drop.fill",
+        title: String = "",
+        notes: String = "",
+        iconName: String = "checkmark.seal.fill",
         timeOfDay: HabitTimeOfDay = .morning,
         sortOrder: Int = 0,
         reminderEnabled: Bool = false,
         reminderHour: Int = 8,
         reminderMinute: Int = 0,
-        repeatDays: Set<Int> = [1, 2, 3, 4, 5, 6, 7],
+        repeatDays: Set<Int> = [2, 3, 4, 5, 6, 7, 1],
         soundOption: NotificationSoundOption = .chimeBell,
-        requiresPhotoProof: Bool = false,
         completedDates: Set<String> = [],
-        photoProofs: [PhotoProofRecord] = [],
         snoozedUntil: Date? = nil,
         createdAt: Date = Date()
     ) {
@@ -136,9 +123,7 @@ final class HabitItem {
         self.reminderMinute = reminderMinute
         self.repeatDaysRaw = repeatDays.sorted().map(String.init).joined(separator: ",")
         self.soundOptionRaw = soundOption.rawValue
-        self.requiresPhotoProof = requiresPhotoProof
         self.completedDatesRaw = completedDates.sorted().joined(separator: ",")
-        self.photoProofsData = try? JSONEncoder().encode(photoProofs)
         self.snoozedUntil = snoozedUntil
         self.createdAt = createdAt
     }
@@ -182,16 +167,6 @@ final class HabitItem {
         }
     }
 
-    var photoProofs: [PhotoProofRecord] {
-        get {
-            guard let data = photoProofsData else { return [] }
-            return (try? JSONDecoder().decode([PhotoProofRecord].self, from: data)) ?? []
-        }
-        set {
-            photoProofsData = try? JSONEncoder().encode(newValue)
-        }
-    }
-
     var formattedReminderTime: String {
         String(format: "%02d:%02d", reminderHour, reminderMinute)
     }
@@ -201,7 +176,7 @@ final class HabitItem {
     }
 
     static func dateKey(for date: Date = Date()) -> String {
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         let comps = calendar.dateComponents([.year, .month, .day], from: date)
         let y = comps.year ?? 2026
         let m = comps.month ?? 1
@@ -216,7 +191,7 @@ final class HabitItem {
         comps.year = parts[0]
         comps.month = parts[1]
         comps.day = parts[2]
-        return Calendar.current.date(from: comps)
+        return ISOWeekCalendar.current.date(from: comps)
     }
 
     func isCompleted(on date: Date = Date()) -> Bool {
@@ -226,22 +201,16 @@ final class HabitItem {
     func isScheduled(on date: Date = Date()) -> Bool {
         let days = repeatDays
         if days.isEmpty { return true }
-        let weekday = Calendar.current.component(.weekday, from: date)
+        let weekday = ISOWeekCalendar.current.component(.weekday, from: date)
         return days.contains(weekday)
     }
 
-    func markCompleted(on date: Date = Date(), photoFileName: String? = nil) {
+    func markCompleted(on date: Date = Date()) {
         let key = Self.dateKey(for: date)
         var current = completedDateStrings
         current.insert(key)
         completedDateStrings = current
         snoozedUntil = nil
-
-        if let photoFileName {
-            var proofs = photoProofs.filter { $0.dateString != key }
-            proofs.append(PhotoProofRecord(dateString: key, fileName: photoFileName, capturedAt: Date()))
-            photoProofs = proofs
-        }
     }
 
     func markIncomplete(on date: Date = Date()) {
@@ -259,17 +228,11 @@ final class HabitItem {
         }
     }
 
-    func photoProof(for date: Date = Date()) -> PhotoProofRecord? {
-        let key = Self.dateKey(for: date)
-        return photoProofs.first(where: { $0.dateString == key })
-    }
-
     // MARK: - Accuracy & Consistency Analytics
 
-    /// Returns completion percentage (0.0...1.0) over the past `days` days (including today).
     func completionRate(lastDays days: Int, referenceDate: Date = Date()) -> Double {
         guard days > 0 else { return 0.0 }
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         let completed = completedDateStrings
         var scheduledCount = 0
         var completedCount = 0
@@ -287,9 +250,8 @@ final class HabitItem {
         return Double(completedCount) / Double(scheduledCount)
     }
 
-    /// All-time completion percentage from habit creation (or earliest logged completion) through today.
     var allTimeCompletionRate: Double {
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         let today = calendar.startOfDay(for: Date())
         let createdDay = calendar.startOfDay(for: createdAt)
 
@@ -311,7 +273,7 @@ final class HabitItem {
     }
 
     var currentStreak: Int {
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         let completed = completedDateStrings
         guard !completed.isEmpty else { return 0 }
 
@@ -338,10 +300,9 @@ final class HabitItem {
         return streak
     }
 
-    /// Generates upcoming reminder fire dates over the next `daysAhead` days for the 64-notification queue.
     func upcomingReminderDates(from referenceDate: Date = Date(), daysAhead: Int = 21) -> [Date] {
         guard reminderEnabled else { return [] }
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         let activeDays = repeatDays.isEmpty ? Set(1...7) : repeatDays
         var results: [Date] = []
 

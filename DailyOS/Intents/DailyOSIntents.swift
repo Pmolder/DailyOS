@@ -107,7 +107,7 @@ struct CompleteHabitIntent: AppIntent {
 struct ArmMorningAlarmIntent: AppIntent {
     static var title: LocalizedStringResource = "Arm Morning Alarm"
     static var description = IntentDescription(
-        "Arms your morning nuclear wake alarm in DailyOS, activates the silent background keep-alive loop, and schedules the 20-alert fallback burst."
+        "Arms your morning wake alarm in DailyOS, activates the silent background keep-alive loop, and schedules the 20-alert fallback burst."
     )
     static var openAppWhenRun: Bool = true
 
@@ -145,14 +145,15 @@ struct ArmMorningAlarmIntent: AppIntent {
             targetAlarm = morningAlarm
         } else {
             let newAlarm = AlarmItem(
-                label: "Nuclear Morning Wake",
+                label: "Morning Alarm",
                 hour: clampedHour,
                 minute: clampedMinute,
                 isEnabled: true,
                 repeatDays: [2, 3, 4, 5, 6],
                 tone: .nuclearSiren,
-                missionType: .pushups,
-                repGoal: 15
+                missionType: .squats,
+                repGoal: 20,
+                stepGoal: 50
             )
             SharedModelContainer.shared.mainContext.insert(newAlarm)
             targetAlarm = newAlarm
@@ -163,7 +164,7 @@ struct ArmMorningAlarmIntent: AppIntent {
         await NotificationScheduler.shared.rescheduleAll()
 
         return .result(
-            dialog: "Armed '\(targetAlarm.label)' for \(targetAlarm.formattedTime) (\(targetAlarm.missionSummary)). Silent overnight keep-alive is active."
+            dialog: "Armed '\(targetAlarm.displayLabel)' for \(targetAlarm.formattedTime) (\(targetAlarm.missionSummary)). Silent overnight keep-alive is active."
         )
     }
 }

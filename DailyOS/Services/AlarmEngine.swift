@@ -3,7 +3,7 @@ import UIKit
 import Combine
 import SwiftData
 
-/// Coordinates Wake alarms, Guided Access monitoring, clock ticking, and `AlarmAudioManager`.
+/// Coordinates Wake alarms, Guided Access monitoring, clock ticking (ISO-8601), and `AlarmAudioManager`.
 @MainActor
 final class AlarmEngine: ObservableObject {
     static let shared = AlarmEngine()
@@ -18,10 +18,6 @@ final class AlarmEngine: ObservableObject {
 
     var isSilentKeepAliveRunning: Bool {
         audioManager.isSilentKeepAliveRunning
-    }
-
-    var isUsingSynthEngineFallback: Bool {
-        audioManager.isUsingSynthFallback
     }
 
     private var checkTimer: Timer?
@@ -111,7 +107,7 @@ final class AlarmEngine: ObservableObject {
 
         guard activeRingingAlarm == nil else { return }
 
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
         let comps = calendar.dateComponents([.year, .month, .day, .hour, .minute, .weekday], from: now)
         guard let year = comps.year,
               let month = comps.month,
@@ -140,7 +136,7 @@ final class AlarmEngine: ObservableObject {
         }
     }
 
-    // MARK: - Trigger, Mission Controls & Completion
+    // MARK: - Trigger, Challenge Controls & Completion
 
     func triggerAlarm(_ alarm: AlarmItem) {
         activeRingingAlarm = alarm
@@ -149,12 +145,12 @@ final class AlarmEngine: ObservableObject {
         audioManager.startWakeEscalation(tone: alarm.tone)
     }
 
-    func pauseSirenForMission() {
-        audioManager.pauseWakeSirenForMission()
+    func silenceForChallenge() {
+        audioManager.silenceWakeForChallenge()
     }
 
-    func triggerPenaltyBlast() {
-        audioManager.blastNuclearPenaltyFullVolume()
+    func startInactivityPenalty() {
+        audioManager.startWakeInactivityPenalty()
     }
 
     func dismissActiveAlarm() {
@@ -170,7 +166,6 @@ final class AlarmEngine: ObservableObject {
         isAlarmRinging = false
         audioManager.completeWakeMissionAndCelebrate()
 
-        // Reschedule pending notifications while keeping idle timer re-enabled after wake completion
         Task {
             await NotificationScheduler.shared.rescheduleAll()
         }

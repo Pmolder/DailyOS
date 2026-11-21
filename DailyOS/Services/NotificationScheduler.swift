@@ -18,9 +18,11 @@ final class NotificationScheduler: ObservableObject {
     static let maxPendingLimit: Int = 64
     static let alarmBurstCount: Int = 20
     static let alarmBurstSpacingSeconds: TimeInterval = 5.0
+    static let focusCascadeCount: Int = 36
 
     static let habitCategoryIdentifier = "HABIT_REMINDER_CATEGORY"
     static let alarmCategoryIdentifier = "ALARM_BURST_CATEGORY"
+    static let focusTaskAlarmCategoryIdentifier = "FOCUS_TASK_ALARM_CATEGORY"
     static let actionMarkDoneIdentifier = "ACTION_MARK_DONE"
     static let actionSnooze15mIdentifier = "ACTION_SNOOZE_15M"
 
@@ -67,7 +69,16 @@ final class NotificationScheduler: ObservableObject {
             options: [.customDismissAction]
         )
 
-        center.setNotificationCategories([habitCategory, alarmCategory])
+        // Registered with .customDismissAction so iOS reports UNNotificationDismissActionIdentifier
+        // if the user swipes/clears a Focus Task Alarm notification to dodge it!
+        let focusTaskAlarmCategory = UNNotificationCategory(
+            identifier: Self.focusTaskAlarmCategoryIdentifier,
+            actions: [],
+            intentIdentifiers: [],
+            options: [.customDismissAction]
+        )
+
+        center.setNotificationCategories([habitCategory, alarmCategory, focusTaskAlarmCategory])
     }
 
     func requestAuthorizationIfNeeded() async -> Bool {
@@ -91,6 +102,113 @@ final class NotificationScheduler: ObservableObject {
         authorizationStatus = settings.authorizationStatus
     }
 
+    // MARK: - Focus Task Alarm Anti-Force-Close Cascade & Evasion Burst
+
+    /// Schedules a dense cascade of `.timeSensitive` local notifications (spaced every 6s)
+    /// so force-closing or backgrounding DailyOS during an active Task Check-In Alarm cannot silence alerts.
+    func scheduleFocusTaskAlarmCascade(
+        taskID: String,
+        taskTitle: String,
+        taskNotes: String,
+        taskSource: String,
+        isEvasionBurst: Bool
+    ) {
+        WavFileSynthesizer.ensureCustomSoundsInstalled()
+        cancelFocusTaskAlarmCascade()
+
+        let count = isEvasionBurst ? 24 : Self.focusCascadeCount
+        let spacing: TimeInterval = isEvasionBurst ? 5.0 : 6.0
+
+        for idx in 0..<count {
+            let fireDelay: TimeInterval
+            if isEvasionBurst {
+                fireDelay = idx == 0 ? 1.0 : TimeInterval(idx) * spacing
+            } else {
+                fireDelay = TimeInterval(idx + 1) * spacing
+            }
+
+            let content = UNMutableNotificationContent()
+            if isEvasionBurst {
+                content.title = "⚠️ Evasion Detected — Alarm Still Active!"
+                content.body = "\(taskTitle): Open DailyOS immediately to submit live photo proof!"
+            } else {
+                content.title = "🚨 Task Alarm Active: \(taskTitle)"
+                content.body = "Open DailyOS to submit live photo proof!"
+            }
+            content.categoryIdentifier = Self.focusTaskAlarmCategoryIdentifier
+            content.interruptionLevel = .timeSensitive
+            content.sound = UNNotificationSound(named: UNNotificationSoundName("focus_warning.wav"))
+            content.userInfo = [
+                "type": "focus_task_alarm",
+                "taskID": taskID,
+                "taskTitle": taskTitle,
+                "taskNotes": taskNotes,
+                "taskSource": taskSource,
+                "evasionBurst": isEvasionBurst
+            ]
+
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: max(1.0, fireDelay), repeats: false)
+            let requestID = "focus_cascade_\(idx)"
+            let request = UNNotificationRequest(identifier: requestID, content: content, trigger: trigger)
+            center.add(request)
+        }
+    }
+
+    /// Pre-schedules a cascade starting exactly when an upcoming check-in deadline expires.
+    func scheduleUpcomingCheckInDeadlineCascade(
+        deadlineDate: Date,
+        taskID: String,
+        taskTitle: String,
+        taskNotes: String,
+        taskSource: String
+    ) {
+        WavFileSynthesizer.ensureCustomSoundsInstalled()
+        cancelFocusTaskAlarmCascade()
+
+        let baseDelay = deadlineDate.timeIntervalSinceNow
+        guard baseDelay > 1.0 else {
+            scheduleFocusTaskAlarmCascade(
+                taskID: taskID,
+                taskTitle: taskTitle,
+                taskNotes: taskNotes,
+                taskSource: taskSource,
+                isEvasionBurst: false
+            )
+            return
+        }
+
+        // Schedule 20 alerts starting at the exact check-in deadline, spaced 6s apart
+        for idx in 0..<20 {
+            let fireDelay = baseDelay + TimeInterval(idx) * 6.0
+            let content = UNMutableNotificationContent()
+            content.title = idx == 0
+                ? "📸 Focus Proof Due: \(taskTitle)"
+                : "🚨 Task Alarm Active: \(taskTitle)"
+            content.body = "Open DailyOS to submit live photo proof!"
+            content.categoryIdentifier = Self.focusTaskAlarmCategoryIdentifier
+            content.interruptionLevel = .timeSensitive
+            content.sound = UNNotificationSound(named: UNNotificationSoundName("focus_warning.wav"))
+            content.userInfo = [
+                "type": "focus_task_alarm",
+                "taskID": taskID,
+                "taskTitle": taskTitle,
+                "taskNotes": taskNotes,
+                "taskSource": taskSource
+            ]
+
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: fireDelay, repeats: false)
+            let request = UNNotificationRequest(identifier: "focus_cascade_\(idx)", content: content, trigger: trigger)
+            center.add(request)
+        }
+    }
+
+    /// Cancels all pending & delivered focus task alarm cascade notifications (only called once proof is verified).
+    func cancelFocusTaskAlarmCascade() {
+        let ids = (0..<Self.focusCascadeCount).map { "focus_cascade_\($0)" }
+        center.removePendingNotificationRequests(withIdentifiers: ids)
+        center.removeDeliveredNotifications(withIdentifiers: ids)
+    }
+
     // MARK: - Master 64-Notification Queue Scheduler
 
     func rescheduleAll() async {
@@ -100,20 +218,21 @@ final class NotificationScheduler: ObservableObject {
         let alarms = SharedModelContainer.shared.fetchAlarms()
         let habits = SharedModelContainer.shared.fetchHabits()
 
-        // Preserve any active focus check-in notification while replacing alarm/habit queue
+        // Preserve any active focus task alarm cascade notifications
         let existing = await center.pendingNotificationRequests()
+        let preservedFocusCount = existing.filter { $0.identifier.hasPrefix("focus_cascade_") }.count
         let toRemove = existing
             .map(\.identifier)
-            .filter { $0 != "focus_accountability_checkin" }
+            .filter { !$0.hasPrefix("focus_cascade_") }
         center.removePendingNotificationRequests(withIdentifiers: toRemove)
 
         let now = Date()
-        var totalScheduled = existing.contains(where: { $0.identifier == "focus_accountability_checkin" }) ? 1 : 0
+        var totalScheduled = preservedFocusCount
         var alarmBurstScheduled = 0
         var habitScheduled = 0
         var summaries: [QueuedNotificationSummary] = []
 
-        // 1. Schedule fallback burst of 20 consecutive notifications spaced 5s apart for enabled alarms
+        // 1. Wake alarm 20-alert fallback burst spaced 5s apart
         let enabledAlarmsWithDates: [(alarm: AlarmItem, nextDate: Date)] = alarms
             .filter { $0.isEnabled }
             .compactMap { alarm in
@@ -122,7 +241,7 @@ final class NotificationScheduler: ObservableObject {
             }
             .sorted { $0.nextDate < $1.nextDate }
 
-        let maxAlarmBurstsToQueue = min(enabledAlarmsWithDates.count, 2)
+        let maxAlarmBurstsToQueue = min(enabledAlarmsWithDates.count, 1)
 
         for entryIndex in 0..<maxAlarmBurstsToQueue {
             let entry = enabledAlarmsWithDates[entryIndex]
@@ -137,7 +256,7 @@ final class NotificationScheduler: ObservableObject {
                 guard timeInterval >= 1.0 else { continue }
 
                 let content = UNMutableNotificationContent()
-                content.title = "☢️ \(alarm.label) (\(burstIndex + 1)/\(Self.alarmBurstCount))"
+                content.title = "⏰ \(alarm.displayLabel) (\(burstIndex + 1)/\(Self.alarmBurstCount))"
                 content.body = "Mission required: \(alarm.missionSummary). Open DailyOS now!"
                 content.categoryIdentifier = Self.alarmCategoryIdentifier
                 content.interruptionLevel = .timeSensitive
@@ -176,7 +295,7 @@ final class NotificationScheduler: ObservableObject {
             }
         }
 
-        // 2. Fill remaining queue capacity up to 64 with upcoming habit reminders
+        // 2. Fill remaining queue slots up to 64 with upcoming habit reminders
         struct UpcomingHabitEvent {
             let habit: HabitItem
             let fireDate: Date
@@ -196,7 +315,7 @@ final class NotificationScheduler: ObservableObject {
 
         let remainingHabitSlots = max(0, Self.maxPendingLimit - totalScheduled)
         let eventsToSchedule = upcomingHabitEvents.prefix(remainingHabitSlots)
-        let calendar = Calendar.current
+        let calendar = ISOWeekCalendar.current
 
         for (idx, event) in eventsToSchedule.enumerated() {
             guard totalScheduled < Self.maxPendingLimit else { break }
@@ -207,7 +326,7 @@ final class NotificationScheduler: ObservableObject {
 
             let content = UNMutableNotificationContent()
             content.title = event.isSnoozed ? "🔔 Snoozed: \(habit.title)" : "✓ \(habit.timeOfDay.displayName) Habit: \(habit.title)"
-            content.body = habit.notes.isEmpty ? "Tap or hold to Mark Done or Snooze 15m." : habit.notes
+            content.body = habit.notes.isEmpty ? "Hold to Mark Done or Snooze 15m." : habit.notes
             content.categoryIdentifier = Self.habitCategoryIdentifier
             content.interruptionLevel = .timeSensitive
             content.userInfo = [
@@ -259,19 +378,40 @@ final class NotificationScheduler: ObservableObject {
         center.removeDeliveredNotifications(withIdentifiers: identifiers)
     }
 
-    // MARK: - Interactive Notification Action Handling
+    // MARK: - Interactive Notification & Dismissal Handling
 
     func handleNotificationResponse(_ response: UNNotificationResponse) async {
         let userInfo = response.notification.request.content.userInfo
         let actionID = response.actionIdentifier
 
-        // Focus accountability notification tap
-        if let type = userInfo["type"] as? String, type == "focus_checkin" {
-            FocusAccountabilityManager.shared.triggerCheckInDue(immediateAlarm: false)
+        // 1. Focus Task Alarm — detect swipe dismissal (evasion) vs tap!
+        if let type = userInfo["type"] as? String, type == "focus_task_alarm" {
+            let taskID = (userInfo["taskID"] as? String) ?? "active_focus_task"
+            let taskTitle = (userInfo["taskTitle"] as? String) ?? "Scheduled Focus Task"
+            let taskNotes = (userInfo["taskNotes"] as? String) ?? ""
+            let taskSource = (userInfo["taskSource"] as? String) ?? "Focus"
+
+            if actionID == UNNotificationDismissActionIdentifier {
+                // User swiped away the Focus Task Alarm notification -> activate Evasion Penalty + immediate burst!
+                FocusAccountabilityManager.shared.handleNotificationDismissedEvasion(
+                    taskID: taskID,
+                    taskTitle: taskTitle,
+                    taskNotes: taskNotes,
+                    taskSource: taskSource
+                )
+            } else {
+                // User tapped the notification -> open full-screen Task Check-In Alarm immediately
+                FocusAccountabilityManager.shared.handleTaskAlarmNotificationTap(
+                    taskID: taskID,
+                    taskTitle: taskTitle,
+                    taskNotes: taskNotes,
+                    taskSource: taskSource
+                )
+            }
             return
         }
 
-        // Alarm burst notification tap
+        // 2. Wake Alarm Burst Notification Tap
         if let alarmIDString = userInfo["alarmID"] as? String,
            let alarmUUID = UUID(uuidString: alarmIDString) {
             let alarms = SharedModelContainer.shared.fetchAlarms()
@@ -282,7 +422,7 @@ final class NotificationScheduler: ObservableObject {
             return
         }
 
-        // Interactive Habit actions
+        // 3. Habit Interactive Actions ("Mark Done" & "Snooze 15m")
         guard let habitIDString = userInfo["habitID"] as? String,
               let habitUUID = UUID(uuidString: habitIDString) else {
             return

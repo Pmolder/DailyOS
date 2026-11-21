@@ -12,9 +12,10 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         UNUserNotificationCenter.current().delegate = self
 
         Task { @MainActor in
+            SystemVolumeController.shared.ensureMountedInKeyWindow()
             NotificationScheduler.shared.registerNotificationCategories()
             AlarmEngine.shared.syncWithAlarms()
-            FocusAccountabilityManager.shared.refreshTodaySchedule()
+            FocusAccountabilityManager.shared.handleAppReopenCheck()
             DailyOSShortcutsProvider.updateAppShortcutParameters()
         }
         return true
@@ -35,10 +36,21 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
                     AlarmEngine.shared.triggerAlarm(alarm)
                 }
             }
-        } else if let type = userInfo["type"] as? String, type == "focus_checkin" {
+        } else if let type = userInfo["type"] as? String, type == "focus_task_alarm" {
+            let taskID = (userInfo["taskID"] as? String) ?? "active_focus_task"
+            let taskTitle = (userInfo["taskTitle"] as? String) ?? "Scheduled Focus Task"
+            let taskNotes = (userInfo["taskNotes"] as? String) ?? ""
+            let taskSource = (userInfo["taskSource"] as? String) ?? "Focus"
+
             Task { @MainActor in
-                if !FocusAccountabilityManager.shared.isCheckInDue {
-                    FocusAccountabilityManager.shared.triggerCheckInDue(immediateAlarm: false)
+                if !FocusAccountabilityManager.shared.isFocusAlarmFullScreenPresented {
+                    FocusAccountabilityManager.shared.activateFocusTaskAlarm(
+                        taskID: taskID,
+                        taskTitle: taskTitle,
+                        taskNotes: taskNotes,
+                        taskSource: taskSource,
+                        evasionPenalty: FocusAccountabilityManager.shared.isEvasionPenaltyActive
+                    )
                 }
             }
         }
@@ -66,6 +78,7 @@ struct DailyOSApp: App {
             ContentView()
                 .modelContainer(SharedModelContainer.shared.container)
                 .preferredColorScheme(.dark)
+                .environment(\.calendar, ISOWeekCalendar.current)
         }
     }
 }

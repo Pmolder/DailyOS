@@ -1,44 +1,188 @@
 import SwiftUI
 import AVFoundation
+import CoreMotion
 import EventKit
 import UniformTypeIdentifiers
 import UIKit
 
-/// Compact Settings & SideStore Backup sheet accessible from the top bar across all 3 tabs.
+/// Compact Settings, Google OAuth Integration & SideStore JSON Backup sheet.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
     @ObservedObject private var alarmEngine = AlarmEngine.shared
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
+    @ObservedObject private var googleAuth = GoogleAuthService.shared
 
-    @AppStorage(SharedModelContainer.registeredBarcodeKey)
-    private var registeredBarcode: String = "DAILYOS-WAKE-QR"
+    // Google Integration State
+    @State private var googleClientIDInput: String = ""
 
-    @AppStorage(SharedModelContainer.registeredBarcodeLabelKey)
-    private var registeredBarcodeLabel: String = "Bathroom Mirror QR"
-
-    // Gemini Keychain state
+    // Gemini Keychain State
     @State private var geminiKeyInput: String = ""
     @State private var revealGeminiKey: Bool = false
     @State private var offlineFallbackEnabled: Bool = KeychainService.offlineVisionFallbackEnabled
     @State private var keyStatusMessage: String?
 
-    // Backup Export/Import state
+    // Backup Export/Import State
     @State private var backupStatusMessage: String?
     @State private var backupStatusIsError: Bool = false
     @State private var showingFileExporter: Bool = false
     @State private var showingFileImporter: Bool = false
     @State private var exportDocument = DailyOSBackupDocument()
 
-    // Barcode Scanner & Permissions
-    @State private var showingBarcodeScanner = false
+    // Permissions
     @State private var cameraAuthStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
+    private let stepPermissionHelper = StepCounterManager()
 
     var body: some View {
         NavigationStack {
             Form {
-                // 1. 1-Tap SideStore JSON Backup & Restore
+                // 1. Direct Google Calendar & Google Tasks Integration (OAuth 2.0 + PKCE)
+                Section {
+                    TextField("Google OAuth iOS Client ID", text: $googleClientIDInput)
+                        .font(.caption.monospaced())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: googleClientIDInput) { _, newValue in
+                            googleAuth.updateClientID(newValue)
+                        }
+
+                    HStack {
+                        Text("Connection Status")
+                        Spacer()
+                        Text(googleAuth.isConnected ? "Connected" : "Not Connected")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(googleAuth.isConnected ? Color.green : Color.secondary)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            googleAuth.updateClientID(googleClientIDInput)
+                            Task {
+                                await googleAuth.connectGoogle()
+                                if googleAuth.isConnected {
+                                    await focusManager.syncAllSources()
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                if googleAuth.isAuthenticating {
+                                    ProgressView()
+                                }
+                                Text(googleAuth.isConnected ? "Reconnect Google" : "Connect Google Calendar & Tasks")
+                                    .font(.subheadline.weight(.bold))
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.blue)
+                        .disabled(googleAuth.isAuthenticating || googleClientIDInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        if googleAuth.isConnected {
+                            Button("Disconnect", role: .destructive) {
+                                googleAuth.signOut()
+                                Task { await focusManager.syncAllSources() }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    if let status = googleAuth.statusMessage {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.cyan)
+                    }
+
+                    Toggle("Sync Google Calendar (v3)", isOn: Binding(
+                        get: { googleAuth.syncGoogleCalendarEnabled },
+                        set: { newVal in
+                            googleAuth.setGoogleCalendarSync(newVal)
+                            Task { await focusManager.syncAllSources() }
+                        }
+                    ))
+
+                    Toggle("Sync Google Tasks (v1)", isOn: Binding(
+                        get: { googleAuth.syncGoogleTasksEnabled },
+                        set: { newVal in
+                            googleAuth.setGoogleTasksSync(newVal)
+                            Task { await focusManager.syncAllSources() }
+                        }
+                    ))
+
+                    Toggle("Optional: Sync Apple Calendar (EventKit)", isOn: Binding(
+                        get: { focusManager.appleCalendarSyncEnabled },
+                        set: { enabled in
+                            if enabled && !focusManager.isAppleCalendarAuthorized {
+                                Task { await focusManager.requestAppleCalendarAccess() }
+                            } else {
+                                focusManager.setAppleCalendarSyncEnabled(enabled)
+                            }
+                        }
+                    ))
+                } header: {
+                    Text("Google Integration & Calendar Sources")
+                } footer: {
+                    Text("Uses native ASWebAuthenticationSession + OAuth 2.0 PKCE with calendar.readonly and tasks.readonly scopes. Tokens are stored securely in iOS Keychain.")
+                }
+
+                // 2. Gemini 2.5 Flash API Key (Keychain)
+                Section {
+                    HStack(spacing: 8) {
+                        Group {
+                            if revealGeminiKey {
+                                TextField("Gemini API Key", text: $geminiKeyInput)
+                            } else {
+                                SecureField("Gemini API Key", text: $geminiKeyInput)
+                            }
+                        }
+                        .font(.subheadline.monospaced())
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+
+                        Button {
+                            revealGeminiKey.toggle()
+                        } label: {
+                            Image(systemName: revealGeminiKey ? "eye.slash" : "eye")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    HStack(spacing: 10) {
+                        Button("Save to Keychain") {
+                            let ok = KeychainService.saveGeminiAPIKey(geminiKeyInput)
+                            keyStatusMessage = ok
+                                ? (geminiKeyInput.isEmpty ? "Cleared Gemini API key." : "Saved Gemini API key in Keychain.")
+                                : "Failed to save key in Keychain."
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.green)
+
+                        if KeychainService.hasGeminiAPIKey {
+                            Button("Clear", role: .destructive) {
+                                KeychainService.deleteGeminiAPIKey()
+                                geminiKeyInput = ""
+                                keyStatusMessage = "Gemini API key removed."
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+
+                    if let keyStatusMessage {
+                        Text(keyStatusMessage)
+                            .font(.caption)
+                            .foregroundStyle(.green)
+                    }
+
+                    Toggle("Offline / No-Key Verification Fallback", isOn: $offlineFallbackEnabled)
+                        .onChange(of: offlineFallbackEnabled) { _, newValue in
+                            KeychainService.offlineVisionFallbackEnabled = newValue
+                        }
+                } header: {
+                    Text("Gemini 2.5 Flash AI Vision (Tab 3 Focus)")
+                }
+
+                // 3. 1-Tap SideStore JSON Backup & Restore
                 Section {
                     HStack(spacing: 10) {
                         Button {
@@ -84,87 +228,12 @@ struct SettingsView: View {
                     if let backupStatusMessage {
                         Text(backupStatusMessage)
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(backupStatusIsError ? .red : .green)
+                            .foregroundStyle(backupStatusIsError ? Color.red : Color.green)
                     }
                 } header: {
                     Text("1-Tap JSON Backup (SideStore Protection)")
                 } footer: {
-                    Text("Export all alarms, habits, 12-week heatmap history, and focus logs to Clipboard or Files before weekly SideStore re-installs.")
-                }
-
-                // 2. Gemini API Key (Keychain) for Tab 3 AI Verification
-                Section {
-                    HStack(spacing: 8) {
-                        Group {
-                            if revealGeminiKey {
-                                TextField("AIza... (Gemini API Key)", text: $geminiKeyInput)
-                            } else {
-                                SecureField("AIza... (Gemini API Key)", text: $geminiKeyInput)
-                            }
-                        }
-                        .font(.subheadline.monospaced())
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                        Button {
-                            revealGeminiKey.toggle()
-                        } label: {
-                            Image(systemName: revealGeminiKey ? "eye.slash" : "eye")
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-
-                    HStack(spacing: 10) {
-                        Button("Save to Keychain") {
-                            let ok = KeychainService.saveGeminiAPIKey(geminiKeyInput)
-                            keyStatusMessage = ok
-                                ? (geminiKeyInput.isEmpty ? "Cleared Gemini API key from Keychain." : "Saved Gemini API key securely in Keychain.")
-                                : "Failed to save key in Keychain."
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(.green)
-
-                        if KeychainService.hasGeminiAPIKey {
-                            Button("Clear", role: .destructive) {
-                                KeychainService.deleteGeminiAPIKey()
-                                geminiKeyInput = ""
-                                keyStatusMessage = "Gemini API key removed."
-                            }
-                            .buttonStyle(.bordered)
-                        }
-                    }
-
-                    if let keyStatusMessage {
-                        Text(keyStatusMessage)
-                            .font(.caption)
-                            .foregroundStyle(.green)
-                    }
-
-                    Toggle("Offline / No-Key Verification Fallback", isOn: $offlineFallbackEnabled)
-                        .onChange(of: offlineFallbackEnabled) { _, newValue in
-                            KeychainService.offlineVisionFallbackEnabled = newValue
-                        }
-                } header: {
-                    Text("Gemini 2.5 Flash AI Vision (Tab 3 Focus)")
-                } footer: {
-                    Text("Stored locally in iOS Keychain. Enable Offline Fallback if you want to test the Focus photo check-in loop without a Gemini API key.")
-                }
-
-                // 3. QR / Barcode Dismissal Target Registration
-                Section("Wake QR / Barcode Mission Target") {
-                    TextField("Location Label (e.g., Bathroom Toothpaste)", text: $registeredBarcodeLabel)
-                    TextField("Registered Code Payload", text: $registeredBarcode)
-                        .font(.subheadline.monospaced())
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    Button {
-                        showingBarcodeScanner = true
-                    } label: {
-                        Label("Scan & Register Target Barcode", systemImage: "qrcode.viewfinder")
-                            .foregroundStyle(.orange)
-                    }
+                    Text("Export alarms, habits, 12-week heatmap history, and scheduled focus tasks to Clipboard or Files before weekly SideStore re-installs.")
                 }
 
                 // 4. Permissions & Diagnostics
@@ -182,15 +251,22 @@ struct SettingsView: View {
                         color: notificationScheduler.authorizationStatus == .authorized ? .green : .orange
                     )
                     statusRow(
-                        title: "Camera (Vision & Proof)",
+                        title: "Camera (Squats & Proof)",
                         value: cameraAuthStatus == .authorized ? "Authorized" : "Pending",
                         color: cameraAuthStatus == .authorized ? .green : .orange
                     )
-                    statusRow(
-                        title: "Calendars (EventKit)",
-                        value: focusManager.isCalendarAuthorized ? "Full Access" : "Not Connected",
-                        color: focusManager.isCalendarAuthorized ? .green : .orange
-                    )
+                    HStack {
+                        Text("Motion & Fitness (Steps)")
+                        Spacer()
+                        Text(StepCounterManager.authorizationStatusText)
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(CMPedometer.authorizationStatus() == .authorized ? Color.green : Color.orange)
+                    }
+                    if CMPedometer.authorizationStatus() == .notDetermined {
+                        Button("Request Motion & Fitness Permission") {
+                            stepPermissionHelper.requestPermissionIfNeeded()
+                        }
+                    }
                 }
             }
             .navigationTitle("Settings & Backup")
@@ -202,15 +278,11 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
+                googleClientIDInput = googleAuth.clientID
                 geminiKeyInput = KeychainService.loadGeminiAPIKey()
                 offlineFallbackEnabled = KeychainService.offlineVisionFallbackEnabled
                 cameraAuthStatus = AVCaptureDevice.authorizationStatus(for: .video)
                 alarmEngine.refreshGuidedAccessStatus()
-            }
-            .sheet(isPresented: $showingBarcodeScanner) {
-                RegisterBarcodeScannerModal { scannedCode in
-                    registeredBarcode = scannedCode
-                }
             }
             .fileExporter(
                 isPresented: $showingFileExporter,
@@ -255,6 +327,7 @@ struct SettingsView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .environment(\.calendar, ISOWeekCalendar.current)
     }
 
     private func statusRow(title: String, value: String, color: Color) -> some View {
