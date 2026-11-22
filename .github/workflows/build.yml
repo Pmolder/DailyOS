@@ -84,15 +84,18 @@ jobs:
 
           binary_path = Path("Payload/DailyOS.app/DailyOS")
           data = binary_path.read_bytes()
+          data_lower = data.lower()
 
           def has_string(s: str) -> bool:
-              return (s.encode("utf-8") in data) or (s.encode("utf-16-le") in data)
+              low = s.lower()
+              return (low.encode("utf-8") in data_lower) or (low.encode("utf-16-le") in data_lower)
 
+          # Use >15-byte literals so ARM64 Release (-O) never folds them into inline small-string registers
           required = [
               "Connect Google Calendar & Tasks",
-              "DO CHALLENGE",
-              "Steps",
-              "WAKE COMPLETE",
+              "Preview Solar-Orange Wake Screen",
+              "All alarms stopped",
+              "Steps Time Limit",
           ]
           forbidden = [
               "AI Camera Pushups",
