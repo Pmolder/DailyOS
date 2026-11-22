@@ -26,8 +26,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patrik.dailyos
         PRODUCT_NAME: DailyOS
-        MARKETING_VERSION: "3.3.0"
-        CURRENT_PROJECT_VERSION: "12"
+        MARKETING_VERSION: "3.4.0"
+        CURRENT_PROJECT_VERSION: "14"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: DailyOS/Info.plist
         CODE_SIGN_IDENTITY: ""

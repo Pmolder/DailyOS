@@ -1,7 +1,45 @@
 import Foundation
 import SwiftData
+import SwiftUI
 
-// MARK: - Habit Time-of-Day Segment
+// MARK: - Habit Kind & Tracking Mode
+
+enum HabitKind: String, CaseIterable, Codable, Identifiable {
+    case build = "build"
+    case quit = "quit"
+
+    var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .build: return "Build A Habit"
+        case .quit: return "Quit A Habit"
+        }
+    }
+
+    var helperCaption: String {
+        switch self {
+        case .build: return "Mark each day you complete it."
+        case .quit: return "Track consecutive days clean."
+        }
+    }
+}
+
+enum HabitTrackingMode: String, CaseIterable, Codable, Identifiable {
+    case binary = "binary"
+    case quantity = "quantity"
+
+    var id: String { rawValue }
+
+    var displayTitle: String {
+        switch self {
+        case .binary: return "Simple Check-in"
+        case .quantity: return "Numeric Goal"
+        }
+    }
+}
+
+// MARK: - Habit Time-of-Day Segment (Preserved for Migration Safety)
 
 enum HabitTimeOfDay: String, CaseIterable, Codable, Identifiable {
     case morning = "morning"
@@ -23,14 +61,6 @@ enum HabitTimeOfDay: String, CaseIterable, Codable, Identifiable {
         case .morning: return "sunrise.fill"
         case .day: return "sun.max.fill"
         case .evening: return "moon.stars.fill"
-        }
-    }
-
-    var sortIndex: Int {
-        switch self {
-        case .morning: return 0
-        case .day: return 1
-        case .evening: return 2
         }
     }
 }
@@ -77,7 +107,43 @@ enum NotificationSoundOption: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-// MARK: - SwiftData Habit Model
+// MARK: - SwiftData HabitLog Model (O(1) Local Day Key + Quantified Value + Journal Note)
+
+@Model
+final class HabitLog {
+    var id: UUID
+    var habitID: UUID
+    var dayKey: String // "yyyy-MM-dd" in local ISO-8601 calendar
+    var date: Date
+    var value: Double // >= target = completed (for quit habits: >= 1 means clean, < 0 means slip)
+    var note: String?
+    var updatedAt: Date
+
+    init(
+        id: UUID = UUID(),
+        habitID: UUID,
+        dayKey: String,
+        date: Date,
+        value: Double = 1.0,
+        note: String? = nil,
+        updatedAt: Date = Date()
+    ) {
+        self.id = id
+        self.habitID = habitID
+        self.dayKey = dayKey
+        self.date = date
+        self.value = value
+        self.note = note
+        self.updatedAt = updatedAt
+    }
+
+    var hasNote: Bool {
+        guard let n = note?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+        return !n.isEmpty
+    }
+}
+
+// MARK: - SwiftData HabitItem Model (Safe Defaults for Lightweight Migration)
 
 @Model
 final class HabitItem {
@@ -85,6 +151,11 @@ final class HabitItem {
     var title: String
     var notes: String
     var iconName: String
+    var colorHex: String = "#34D399"
+    var kindRaw: String = HabitKind.build.rawValue
+    var trackingModeRaw: String = HabitTrackingMode.binary.rawValue
+    var dailyTarget: Double = 1.0
+    var unitLabel: String = ""
     var timeOfDayRaw: String = HabitTimeOfDay.morning.rawValue
     var sortOrder: Int = 0
     var reminderEnabled: Bool
@@ -94,6 +165,7 @@ final class HabitItem {
     var soundOptionRaw: String
     var completedDatesRaw: String
     var snoozedUntil: Date?
+    var isArchived: Bool = false
     var createdAt: Date
 
     init(
@@ -101,6 +173,11 @@ final class HabitItem {
         title: String = "",
         notes: String = "",
         iconName: String = "checkmark.seal.fill",
+        colorHex: String = "#34D399",
+        kind: HabitKind = .build,
+        trackingMode: HabitTrackingMode = .binary,
+        dailyTarget: Double = 1.0,
+        unitLabel: String = "",
         timeOfDay: HabitTimeOfDay = .morning,
         sortOrder: Int = 0,
         reminderEnabled: Bool = false,
@@ -110,12 +187,18 @@ final class HabitItem {
         soundOption: NotificationSoundOption = .chimeBell,
         completedDates: Set<String> = [],
         snoozedUntil: Date? = nil,
+        isArchived: Bool = false,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.title = title
         self.notes = notes
         self.iconName = iconName
+        self.colorHex = colorHex
+        self.kindRaw = kind.rawValue
+        self.trackingModeRaw = trackingMode.rawValue
+        self.dailyTarget = max(1.0, dailyTarget)
+        self.unitLabel = unitLabel
         self.timeOfDayRaw = timeOfDay.rawValue
         self.sortOrder = sortOrder
         self.reminderEnabled = reminderEnabled
@@ -125,7 +208,33 @@ final class HabitItem {
         self.soundOptionRaw = soundOption.rawValue
         self.completedDatesRaw = completedDates.sorted().joined(separator: ",")
         self.snoozedUntil = snoozedUntil
+        self.isArchived = isArchived
         self.createdAt = createdAt
+    }
+
+    // Semantic aliases matching v3.4 spec
+    var name: String {
+        get { title }
+        set { title = newValue }
+    }
+
+    var subtitle: String {
+        get { notes }
+        set { notes = newValue }
+    }
+
+    var accentColor: Color {
+        Color(hex: colorHex)
+    }
+
+    var kind: HabitKind {
+        get { HabitKind(rawValue: kindRaw) ?? .build }
+        set { kindRaw = newValue.rawValue }
+    }
+
+    var trackingMode: HabitTrackingMode {
+        get { HabitTrackingMode(rawValue: trackingModeRaw) ?? .binary }
+        set { trackingModeRaw = newValue.rawValue }
     }
 
     var timeOfDay: HabitTimeOfDay {
@@ -167,12 +276,18 @@ final class HabitItem {
         }
     }
 
+    var effectiveDailyTarget: Double {
+        trackingMode == .quantity ? max(1.0, dailyTarget) : 1.0
+    }
+
     var formattedReminderTime: String {
         String(format: "%02d:%02d", reminderHour, reminderMinute)
     }
 
-    var repeatSummary: String {
-        Weekday.formatSummary(for: repeatDays)
+    var scheduleBadgeText: String {
+        let days = repeatDays
+        if days.isEmpty || days.count == 7 { return "Daily" }
+        return Weekday.formatSummary(for: days)
     }
 
     static func dateKey(for date: Date = Date()) -> String {
@@ -228,50 +343,6 @@ final class HabitItem {
         }
     }
 
-    // MARK: - Accuracy & Consistency Analytics
-
-    func completionRate(lastDays days: Int, referenceDate: Date = Date()) -> Double {
-        guard days > 0 else { return 0.0 }
-        let calendar = ISOWeekCalendar.current
-        let completed = completedDateStrings
-        var scheduledCount = 0
-        var completedCount = 0
-
-        for offset in 0..<days {
-            guard let day = calendar.date(byAdding: .day, value: -offset, to: referenceDate) else { continue }
-            if isScheduled(on: day) {
-                scheduledCount += 1
-                if completed.contains(Self.dateKey(for: day)) {
-                    completedCount += 1
-                }
-            }
-        }
-        guard scheduledCount > 0 else { return 0.0 }
-        return Double(completedCount) / Double(scheduledCount)
-    }
-
-    var allTimeCompletionRate: Double {
-        let calendar = ISOWeekCalendar.current
-        let today = calendar.startOfDay(for: Date())
-        let createdDay = calendar.startOfDay(for: createdAt)
-
-        let earliestLogged = completedDateStrings
-            .compactMap { Self.date(from: $0) }
-            .map { calendar.startOfDay(for: $0) }
-            .min()
-
-        let startDay = min(createdDay, earliestLogged ?? createdDay)
-        let daySpan = max(1, (calendar.dateComponents([.day], from: startDay, to: today).day ?? 0) + 1)
-        return completionRate(lastDays: min(daySpan, 3650), referenceDate: today)
-    }
-
-    static func dailyCompletionSummary(habits: [HabitItem], on date: Date) -> (completed: Int, scheduled: Int, ratio: Double) {
-        let scheduledHabits = habits.filter { $0.isScheduled(on: date) }
-        guard !scheduledHabits.isEmpty else { return (0, 0, 0.0) }
-        let completedCount = scheduledHabits.filter { $0.isCompleted(on: date) }.count
-        return (completedCount, scheduledHabits.count, Double(completedCount) / Double(scheduledHabits.count))
-    }
-
     var currentStreak: Int {
         let calendar = ISOWeekCalendar.current
         let completed = completedDateStrings
@@ -281,19 +352,13 @@ final class HabitItem {
         let today = Date()
 
         for dayOffset in 0..<365 {
-            guard let checkDate = calendar.date(byAdding: .day, value: -dayOffset, to: today) else {
-                break
-            }
+            guard let checkDate = calendar.date(byAdding: .day, value: -dayOffset, to: today) else { break }
             let key = Self.dateKey(for: checkDate)
             if completed.contains(key) {
                 streak += 1
             } else {
-                if dayOffset == 0 {
-                    continue
-                }
-                if !isScheduled(on: checkDate) {
-                    continue
-                }
+                if dayOffset == 0 { continue }
+                if !isScheduled(on: checkDate) { continue }
                 break
             }
         }
@@ -301,7 +366,7 @@ final class HabitItem {
     }
 
     func upcomingReminderDates(from referenceDate: Date = Date(), daysAhead: Int = 21) -> [Date] {
-        guard reminderEnabled else { return [] }
+        guard reminderEnabled && !isArchived else { return [] }
         let calendar = ISOWeekCalendar.current
         let activeDays = repeatDays.isEmpty ? Set(1...7) : repeatDays
         var results: [Date] = []
@@ -311,15 +376,10 @@ final class HabitItem {
         }
 
         for offset in 0..<daysAhead {
-            guard let targetDay = calendar.date(byAdding: .day, value: offset, to: referenceDate) else {
-                continue
-            }
+            guard let targetDay = calendar.date(byAdding: .day, value: offset, to: referenceDate) else { continue }
             let weekday = calendar.component(.weekday, from: targetDay)
             guard activeDays.contains(weekday) else { continue }
-
-            if offset == 0 && isCompleted(on: targetDay) {
-                continue
-            }
+            if offset == 0 && isCompleted(on: targetDay) { continue }
 
             var comps = calendar.dateComponents([.year, .month, .day], from: targetDay)
             comps.hour = reminderHour

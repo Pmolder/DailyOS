@@ -181,6 +181,7 @@ final class AlarmEngine: ObservableObject {
     /// Permanently stops all alarms & cancels fallback notifications upon winning Stage-1 + Stage-2
     /// while keeping the "WAKE COMPLETE" summary card visible until the user taps "START MY DAY".
     func finalizeWakeAudioAndNotifications() {
+        HabitMetricsEngine.markWakeCompletedToday()
         if let current = activeRingingAlarm {
             NotificationScheduler.shared.cancelAlarmBurstNotifications(for: current.id)
             if current.repeatDays.isEmpty && current.isEnabled {

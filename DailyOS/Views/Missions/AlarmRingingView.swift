@@ -232,6 +232,7 @@ struct AlarmRingingView: View {
                     .shadow(color: Color.black.opacity(0.42), radius: 14, y: 6)
                 }
                 .buttonStyle(.plain)
+                .accessibilityHint("Tap Do Challenge to silence alarm")
                 .padding(.bottom, 16)
             }
             .padding(.horizontal, 20)

@@ -34,11 +34,12 @@ enum BackupService {
         let store = SharedModelContainer.shared
         let alarms = store.fetchAlarms()
         let habits = store.fetchHabits()
+        let habitLogs = store.fetchHabitLogs()
         let manualBlocks = store.fetchManualFocusBlocks()
         let checkInLogs = store.fetchFocusCheckInLogs()
 
         let payload = DailyOSBackupPayload(
-            schemaVersion: 4,
+            schemaVersion: 5,
             exportedAt: Date(),
             trackedAppleCalendarIDs: FocusAccountabilityManager.shared.trackedAppleCalendarIDs.sorted(),
             appleCalendarSyncEnabled: FocusAccountabilityManager.shared.appleCalendarSyncEnabled,
@@ -72,6 +73,12 @@ enum BackupService {
                     title: $0.title,
                     notes: $0.notes,
                     iconName: $0.iconName,
+                    colorHex: $0.colorHex,
+                    kindRaw: $0.kindRaw,
+                    trackingModeRaw: $0.trackingModeRaw,
+                    dailyTarget: $0.dailyTarget,
+                    unitLabel: $0.unitLabel,
+                    isArchived: $0.isArchived,
                     timeOfDayRaw: $0.timeOfDayRaw,
                     sortOrder: $0.sortOrder,
                     reminderEnabled: $0.reminderEnabled,
@@ -81,6 +88,17 @@ enum BackupService {
                     soundOptionRaw: $0.soundOptionRaw,
                     completedDatesRaw: $0.completedDatesRaw,
                     createdAt: $0.createdAt
+                )
+            },
+            habitLogs: habitLogs.map {
+                HabitLogBackupDTO(
+                    id: $0.id,
+                    habitID: $0.habitID,
+                    dayKey: $0.dayKey,
+                    date: $0.date,
+                    value: $0.value,
+                    note: $0.note,
+                    updatedAt: $0.updatedAt
                 )
             },
             manualFocusBlocks: manualBlocks.map {
@@ -135,6 +153,7 @@ enum BackupService {
 
         for alarm in store.fetchAlarms() { context.delete(alarm) }
         for habit in store.fetchHabits() { context.delete(habit) }
+        for hlog in store.fetchHabitLogs() { context.delete(hlog) }
         for block in store.fetchManualFocusBlocks() { context.delete(block) }
         for log in store.fetchFocusCheckInLogs() { context.delete(log) }
 
@@ -166,6 +185,11 @@ enum BackupService {
                 title: dto.title,
                 notes: dto.notes,
                 iconName: dto.iconName,
+                colorHex: dto.colorHex ?? "#34D399",
+                kind: HabitKind(rawValue: dto.kindRaw ?? "") ?? .build,
+                trackingMode: HabitTrackingMode(rawValue: dto.trackingModeRaw ?? "") ?? .binary,
+                dailyTarget: dto.dailyTarget ?? 1.0,
+                unitLabel: dto.unitLabel ?? "",
                 timeOfDay: HabitTimeOfDay(rawValue: dto.timeOfDayRaw) ?? .morning,
                 sortOrder: dto.sortOrder,
                 reminderEnabled: dto.reminderEnabled,
@@ -173,11 +197,25 @@ enum BackupService {
                 reminderMinute: dto.reminderMinute,
                 repeatDays: [],
                 soundOption: NotificationSoundOption(rawValue: dto.soundOptionRaw) ?? .chimeBell,
+                isArchived: dto.isArchived ?? false,
                 createdAt: dto.createdAt
             )
             item.repeatDaysRaw = dto.repeatDaysRaw
             item.completedDatesRaw = dto.completedDatesRaw
             context.insert(item)
+        }
+
+        for dto in (payload.habitLogs ?? []) {
+            let log = HabitLog(
+                id: dto.id,
+                habitID: dto.habitID,
+                dayKey: dto.dayKey,
+                date: dto.date,
+                value: dto.value,
+                note: dto.note,
+                updatedAt: dto.updatedAt
+            )
+            context.insert(log)
         }
 
         for dto in payload.manualFocusBlocks {

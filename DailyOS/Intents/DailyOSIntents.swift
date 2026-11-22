@@ -92,6 +92,11 @@ struct CompleteHabitIntent: AppIntent {
         }
 
         resolvedHabit.markCompleted(on: Date())
+        SharedModelContainer.shared.setHabitLog(
+            for: resolvedHabit,
+            on: Date(),
+            value: resolvedHabit.effectiveDailyTarget
+        )
         SharedModelContainer.shared.save()
         await NotificationScheduler.shared.rescheduleAll()
 

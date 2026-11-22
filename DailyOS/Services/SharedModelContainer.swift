@@ -15,6 +15,7 @@ final class SharedModelContainer {
         let schema = Schema([
             AlarmItem.self,
             HabitItem.self,
+            HabitLog.self,
             ManualFocusBlock.self,
             FocusCheckInLog.self
         ])
@@ -27,14 +28,12 @@ final class SharedModelContainer {
             cloudKitDatabase: .none
         )
 
-        // Attempt 1: Open persistent v3 SQLite store
         if let opened = try? ModelContainer(for: schema, configurations: [persistentConfig]) {
             self.container = opened
             self.isUsingInMemoryFallback = false
             return
         }
 
-        // Attempt 2: Delete stale/corrupted SQLite files (including -wal / -shm) and retry
         Self.removeStoreFiles(at: storeURL)
         if let recovered = try? ModelContainer(for: schema, configurations: [persistentConfig]) {
             self.container = recovered
@@ -42,7 +41,6 @@ final class SharedModelContainer {
             return
         }
 
-        // Attempt 3: Guaranteed safe in-memory fallback (never fatalError on launch)
         let inMemoryConfig = ModelConfiguration(
             schema: schema,
             isStoredInMemoryOnly: true,
@@ -55,8 +53,13 @@ final class SharedModelContainer {
             return
         }
 
-        // Final safeguard with default in-memory schema
-        let fallbackSchema = Schema([AlarmItem.self, HabitItem.self, ManualFocusBlock.self, FocusCheckInLog.self])
+        let fallbackSchema = Schema([
+            AlarmItem.self,
+            HabitItem.self,
+            HabitLog.self,
+            ManualFocusBlock.self,
+            FocusCheckInLog.self
+        ])
         self.container = try! ModelContainer(
             for: fallbackSchema,
             configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
@@ -110,6 +113,75 @@ final class SharedModelContainer {
             ]
         )
         return (try? mainContext.fetch(descriptor)) ?? []
+    }
+
+    func fetchHabitLogs(for habitID: UUID? = nil) -> [HabitLog] {
+        let descriptor = FetchDescriptor<HabitLog>(
+            sortBy: [SortDescriptor(\.date, order: .reverse)]
+        )
+        let all = (try? mainContext.fetch(descriptor)) ?? []
+        if let habitID {
+            return all.filter { $0.habitID == habitID }
+        }
+        return all
+    }
+
+    /// Upserts a `HabitLog` for `(habit, date)` and synchronizes legacy `completedDateStrings`.
+    func setHabitLog(
+        for habit: HabitItem,
+        on date: Date,
+        value: Double,
+        note: String? = nil,
+        preserveExistingNote: Bool = true
+    ) {
+        let key = HabitItem.dateKey(for: date)
+        let existingLogs = fetchHabitLogs(for: habit.id)
+        if let existing = existingLogs.first(where: { $0.dayKey == key }) {
+            existing.value = value
+            if !preserveExistingNote || note != nil {
+                existing.note = note
+            }
+            existing.updatedAt = Date()
+        } else {
+            let newLog = HabitLog(
+                habitID: habit.id,
+                dayKey: key,
+                date: ISOWeekCalendar.current.startOfDay(for: date),
+                value: value,
+                note: note
+            )
+            mainContext.insert(newLog)
+        }
+
+        if value >= habit.effectiveDailyTarget {
+            habit.markCompleted(on: date)
+        } else {
+            habit.markIncomplete(on: date)
+        }
+        save()
+    }
+
+    func updateHabitNote(for habit: HabitItem, on date: Date, note: String?) {
+        let key = HabitItem.dateKey(for: date)
+        let cleaned = note?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let finalNote = (cleaned?.isEmpty == true) ? nil : cleaned
+
+        let existingLogs = fetchHabitLogs(for: habit.id)
+        if let existing = existingLogs.first(where: { $0.dayKey == key }) {
+            existing.note = finalNote
+            existing.updatedAt = Date()
+        } else if let finalNote {
+            let value: Double = habit.isCompleted(on: date) ? habit.effectiveDailyTarget : 0.0
+            let newLog = HabitLog(
+                habitID: habit.id,
+                dayKey: key,
+                date: ISOWeekCalendar.current.startOfDay(for: date),
+                value: value,
+                note: finalNote
+            )
+            mainContext.insert(newLog)
+        }
+        save()
     }
 
     func fetchManualFocusBlocks() -> [ManualFocusBlock] {

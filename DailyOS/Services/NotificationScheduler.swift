@@ -436,6 +436,11 @@ final class NotificationScheduler: ObservableObject {
         switch actionID {
         case Self.actionMarkDoneIdentifier:
             habit.markCompleted(on: Date())
+            SharedModelContainer.shared.setHabitLog(
+                for: habit,
+                on: Date(),
+                value: habit.effectiveDailyTarget
+            )
             SharedModelContainer.shared.save()
             await rescheduleAll()
 

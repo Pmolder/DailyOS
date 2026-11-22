@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 
+/// "Every habit. One glance." — Rebuilt Habits Tab matching the Midnight Obsidian & Ambient Glow design language.
 struct HabitsListView: View {
     @Environment(\.modelContext) private var modelContext
     @Query(
@@ -8,462 +9,498 @@ struct HabitsListView: View {
             SortDescriptor(\HabitItem.sortOrder, order: .forward),
             SortDescriptor(\HabitItem.createdAt, order: .forward)
         ]
-    ) private var habits: [HabitItem]
+    ) private var allHabits: [HabitItem]
+
+    @Query(sort: [SortDescriptor(\HabitLog.date, order: .reverse)])
+    private var allLogs: [HabitLog]
 
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
 
-    let onOpenSettings: () -> Void
+    @State private var isScoreCardExpanded: Bool = true
+    @State private var showingCreateSheet: Bool = false
+    @State private var showingStreakSheet: Bool = false
+    @State private var showingAnalyticsSheet: Bool = false
+    @State private var quantityAdjustHabit: HabitItem?
 
-    @State private var showingCreateSheet = false
-    @State private var editingHabit: HabitItem?
-    @State private var selectedHeatmapDate: Date?
-
-    private let impactFeedback = UIImpactFeedbackGenerator(style: .light)
-
-    private var todaySummary: (completed: Int, scheduled: Int, ratio: Double) {
-        HabitItem.dailyCompletionSummary(habits: habits, on: Date())
+    private var activeHabits: [HabitItem] {
+        allHabits.filter { !$0.isArchived }
     }
 
-    private var overall7DayAccuracy: Double {
-        averageAccuracy(days: 7)
+    private var todayScore: TodayScoreSummary {
+        HabitMetricsEngine.todayScoreSummary(habits: activeHabits, allLogs: allLogs)
     }
 
-    private var overall30DayAccuracy: Double {
-        averageAccuracy(days: 30)
+    private var globalStreak: GlobalStreakSummary {
+        HabitMetricsEngine.globalStreakSummary(habits: activeHabits, allLogs: allLogs)
+    }
+
+    private var formattedTodaySubtitle: String {
+        let f = DateFormatter()
+        f.calendar = ISOWeekCalendar.current
+        f.timeZone = TimeZone.current
+        f.dateFormat = "EEEE, d MMM"
+        return f.string(from: Date())
     }
 
     var body: some View {
         NavigationStack {
-            List {
-                // 1. Daily Accuracy Ring & 12-Week Monday-First Heatmap
-                Section {
-                    VStack(spacing: 14) {
-                        HStack(spacing: 18) {
-                            ZStack {
-                                Circle()
-                                    .stroke(Color.white.opacity(0.12), lineWidth: 10)
-                                    .frame(width: 78, height: 78)
+            ZStack {
+                DailyOSTheme.canvas.ignoresSafeArea()
 
-                                Circle()
-                                    .trim(from: 0, to: todaySummary.ratio)
-                                    .stroke(
-                                        AngularGradient(
-                                            colors: [.mint, .green, .emeraldAccent],
-                                            center: .center
-                                        ),
-                                        style: StrokeStyle(lineWidth: 10, lineCap: .round)
-                                    )
-                                    .rotationEffect(.degrees(-90))
-                                    .frame(width: 78, height: 78)
-                                    .animation(.spring(response: 0.35), value: todaySummary.ratio)
-
-                                Text("\(Int(round(todaySummary.ratio * 100)))%")
-                                    .font(.headline.weight(.black).monospacedDigit())
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 16) {
+                        // 1. Top Header Bar
+                        HStack(alignment: .center, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Habits")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
                                     .foregroundStyle(.white)
+                                Text(formattedTodaySubtitle)
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.eyebrow)
                             }
 
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Daily Accuracy")
-                                    .font(.headline.weight(.bold))
+                            Spacer()
 
-                                Text("\(todaySummary.completed) of \(todaySummary.scheduled) scheduled habits completed")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-
-                                HStack(spacing: 8) {
-                                    accuracyPill(label: "7D", value: overall7DayAccuracy, color: .cyan)
-                                    accuracyPill(label: "30D", value: overall30DayAccuracy, color: .green)
+                            // Analytics / Stats Circular Button
+                            if !activeHabits.isEmpty {
+                                FrostedCircleButton(icon: "chart.xyaxis.line", size: 38) {
+                                    showingAnalyticsSheet = true
                                 }
                             }
-                            Spacer(minLength: 0)
+
+                            // Streak Flame Pill
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                showingStreakSheet = true
+                            } label: {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "flame.fill")
+                                        .font(.system(size: 13, weight: .bold))
+                                        .foregroundStyle(Color(hex: "#FF8C42"))
+                                    Text("\(globalStreak.currentStreak)")
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(.white)
+                                }
+                                .padding(.horizontal, 12)
+                                .frame(height: 38)
+                                .background(DailyOSTheme.buttonSurface, in: Capsule())
+                                .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+
+                            // Add Habit Circular Button
+                            FrostedCircleButton(icon: "plus", size: 38) {
+                                showingCreateSheet = true
+                            }
                         }
+                        .padding(.top, 6)
 
-                        Divider()
-
-                        // ISO-8601 Monday-First 12-Week Consistency Heatmap Grid
-                        ConsistencyHeatmapView(
-                            habits: habits,
-                            selectedDate: $selectedHeatmapDate
+                        // 2. Collapsible "Today's Score" Hero Card
+                        TodayScoreHeroCard(
+                            summary: todayScore,
+                            isExpanded: $isScoreCardExpanded
                         )
-                    }
-                    .padding(.vertical, 6)
-                }
 
-                // 2. Clean Empty State or Morning / Day / Evening Segments
-                if habits.isEmpty {
-                    Section {
-                        ContentUnavailableView(
-                            "No Habits Yet",
-                            systemImage: "square.grid.3x3.fill",
-                            description: Text("Tap + to add Morning, Day, or Evening habits and build your 12-week consistency grid.")
-                        )
-                    }
-                } else {
-                    ForEach(HabitTimeOfDay.allCases) { segment in
-                        let segmentHabits = habitsForSegment(segment)
+                        // 3. Scrollable Habit Cards Feed (Clean Empty State on Fresh Install)
+                        if activeHabits.isEmpty {
+                            VStack(spacing: 14) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 34))
+                                    .foregroundStyle(DailyOSTheme.skyGlow)
+                                Text("No Habits Yet")
+                                    .font(.system(size: 18, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.white)
+                                Text("Tap + to build a daily routine or track a quit streak with glowing heatmaps, notes, and analytics.")
+                                    .font(.system(size: 13, weight: .regular, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.eyebrow)
+                                    .multilineTextAlignment(.center)
 
-                        Section {
-                            if segmentHabits.isEmpty {
-                                HStack {
-                                    Text("No \(segment.displayName.lowercased()) habits")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button("Add") {
-                                        showingCreateSheet = true
-                                    }
-                                    .font(.caption.weight(.bold))
+                                Button {
+                                    showingCreateSheet = true
+                                } label: {
+                                    Label("Create First Habit", systemImage: "plus")
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .foregroundStyle(DailyOSTheme.canvas)
+                                        .padding(.horizontal, 20)
+                                        .padding(.vertical, 12)
+                                        .background(DailyOSTheme.skyGlow, in: Capsule())
                                 }
-                            } else {
-                                ForEach(segmentHabits) { habit in
-                                    SegmentedHabitRowView(
-                                        habit: habit,
-                                        onQuickCheck: {
-                                            impactFeedback.impactOccurred()
-                                            habit.toggleCompletion(on: Date())
-                                            SharedModelContainer.shared.save()
-                                            Task {
-                                                await notificationScheduler.rescheduleAll()
+                                .buttonStyle(.plain)
+                                .padding(.top, 4)
+                            }
+                            .padding(28)
+                            .frame(maxWidth: .infinity)
+                            .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.06)
+                        } else {
+                            LazyVStack(spacing: 14) {
+                                ForEach(activeHabits) { habit in
+                                    let logMap = HabitMetricsEngine.logsByDayKey(for: habit.id, allLogs: allLogs)
+                                    NavigationLink {
+                                        HabitDetailView(habit: habit, allHabits: activeHabits, allLogs: allLogs)
+                                    } label: {
+                                        HabitFeedCardView(
+                                            habit: habit,
+                                            logMap: logMap,
+                                            onQuickCheckIn: {
+                                                handleQuickCheckIn(habit, logMap: logMap)
+                                            },
+                                            onLongPressQuantity: {
+                                                quantityAdjustHabit = habit
                                             }
-                                        },
-                                        onTapEdit: {
-                                            editingHabit = habit
-                                        }
-                                    )
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .onMove { source, destination in
-                                    moveHabits(in: segment, from: source, to: destination)
-                                }
-                                .onDelete { offsets in
-                                    deleteHabits(in: segment, at: offsets)
-                                }
-                            }
-                        } header: {
-                            HStack(spacing: 6) {
-                                Image(systemName: segment.iconName)
-                                    .foregroundStyle(colorForSegment(segment))
-                                Text(segment.displayName)
-                                    .font(.subheadline.weight(.bold))
-                                    .foregroundStyle(.white)
-                                Spacer()
-                                let doneCount = segmentHabits.filter { $0.isCompleted(on: Date()) }.count
-                                Text("\(doneCount)/\(segmentHabits.count)")
-                                    .font(.caption2.monospacedDigit().weight(.bold))
-                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 28)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(SolarTheme.obsidian)
-            .listStyle(.insetGrouped)
-            .navigationTitle("Habits")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onOpenSettings) {
-                        Image(systemName: "gearshape.fill")
-                    }
-                    .accessibilityLabel("Settings and Backup")
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if !habits.isEmpty {
-                        EditButton()
-                    }
-                    Button {
-                        showingCreateSheet = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
-                    }
-                    .accessibilityLabel("Add Habit")
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingCreateSheet) {
                 HabitEditorView(habitToEdit: nil)
             }
-            .sheet(item: $editingHabit) { habit in
-                HabitEditorView(habitToEdit: habit)
+            .sheet(isPresented: $showingStreakSheet) {
+                StreakFreezeSheetView(summary: globalStreak)
             }
-        }
-    }
-
-    private func habitsForSegment(_ segment: HabitTimeOfDay) -> [HabitItem] {
-        habits
-            .filter { $0.timeOfDay == segment }
-            .sorted {
-                if $0.sortOrder != $1.sortOrder {
-                    return $0.sortOrder < $1.sortOrder
+            .sheet(isPresented: $showingAnalyticsSheet) {
+                if let first = activeHabits.first {
+                    HabitAnalyticsSheetView(habits: activeHabits, allLogs: allLogs, selectedHabitID: first.id)
                 }
-                return $0.createdAt < $1.createdAt
             }
-    }
-
-    private func moveHabits(in segment: HabitTimeOfDay, from source: IndexSet, to destination: Int) {
-        var reordered = habitsForSegment(segment)
-        reordered.move(fromOffsets: source, toOffset: destination)
-        for (index, item) in reordered.enumerated() {
-            item.sortOrder = index
-        }
-        SharedModelContainer.shared.save()
-    }
-
-    private func deleteHabits(in segment: HabitTimeOfDay, at offsets: IndexSet) {
-        let items = habitsForSegment(segment)
-        for index in offsets where index < items.count {
-            modelContext.delete(items[index])
-        }
-        SharedModelContainer.shared.save()
-        Task {
-            await notificationScheduler.rescheduleAll()
+            .sheet(item: $quantityAdjustHabit) { habit in
+                let map = HabitMetricsEngine.logsByDayKey(for: habit.id, allLogs: allLogs)
+                HabitQuantityAdjustSheet(
+                    habit: habit,
+                    date: Date(),
+                    initialValue: HabitMetricsEngine.loggedValue(for: habit, on: Date(), logMap: map)
+                )
+            }
         }
     }
 
-    private func averageAccuracy(days: Int) -> Double {
-        guard !habits.isEmpty else { return 0 }
-        let sum = habits.reduce(0.0) { $0 + $1.completionRate(lastDays: days) }
-        return sum / Double(habits.count)
-    }
-
-    private func accuracyPill(label: String, value: Double, color: Color) -> some View {
-        HStack(spacing: 4) {
-            Text(label)
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-            Text("\(Int(round(value * 100)))%")
-                .font(.caption2.weight(.black).monospacedDigit())
-                .foregroundStyle(color)
+    private func handleQuickCheckIn(_ habit: HabitItem, logMap: [String: HabitLog]) {
+        let today = Date()
+        if habit.trackingMode == .quantity {
+            let current = HabitMetricsEngine.loggedValue(for: habit, on: today, logMap: logMap)
+            let next = current + 1.0
+            SharedModelContainer.shared.setHabitLog(for: habit, on: today, value: next)
+            if next >= habit.effectiveDailyTarget && current < habit.effectiveDailyTarget {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } else {
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+        } else if habit.kind == .quit {
+            let currentlyClean = HabitMetricsEngine.isDayComplete(for: habit, on: today, logMap: logMap)
+            SharedModelContainer.shared.setHabitLog(for: habit, on: today, value: currentlyClean ? -1.0 : 1.0)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        } else {
+            let currentlyDone = HabitMetricsEngine.isDayComplete(for: habit, on: today, logMap: logMap)
+            SharedModelContainer.shared.setHabitLog(for: habit, on: today, value: currentlyDone ? 0.0 : 1.0)
+            if !currentlyDone {
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+            } else {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(color.opacity(0.14), in: Capsule())
-    }
 
-    private func colorForSegment(_ segment: HabitTimeOfDay) -> Color {
-        switch segment {
-        case .morning: return .orange
-        case .day: return .cyan
-        case .evening: return .indigo
-        }
+        Task { await notificationScheduler.rescheduleAll() }
     }
 }
 
-// MARK: - Segmented Habit Row
+// MARK: - Collapsible "Today's Score" Hero Card
 
-private struct SegmentedHabitRowView: View {
-    let habit: HabitItem
-    let onQuickCheck: () -> Void
-    let onTapEdit: () -> Void
+private struct TodayScoreHeroCard: View {
+    let summary: TodayScoreSummary
+    @Binding var isExpanded: Bool
 
-    private var completedToday: Bool {
-        habit.isCompleted(on: Date())
+    private var ringColor: Color {
+        switch summary.score {
+        case 75...100: return DailyOSTheme.skyGlow
+        case 45..<75: return Color(hex: "#38BDF8")
+        default: return Color(hex: "#818CF8")
+        }
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button(action: onQuickCheck) {
-                ZStack {
-                    Circle()
-                        .fill(completedToday ? Color.green : Color.white.opacity(0.08))
-                        .frame(width: 38, height: 38)
-                        .overlay(
-                            Circle()
-                                .stroke(completedToday ? Color.green : Color.white.opacity(0.25), lineWidth: 1.5)
-                        )
-
-                    if completedToday {
-                        Image(systemName: "checkmark")
-                            .font(.subheadline.weight(.black))
-                            .foregroundStyle(.black)
-                    } else {
-                        Image(systemName: habit.iconName)
-                            .font(.subheadline)
-                            .foregroundStyle(.white.opacity(0.85))
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-
-            Button(action: onTapEdit) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text(habit.title)
-                            .font(.subheadline.weight(.semibold))
-                            .strikethrough(completedToday, color: .secondary)
-                            .foregroundStyle(completedToday ? Color.secondary : Color.white)
-
-                        Spacer()
-
-                        HStack(spacing: 2) {
-                            Image(systemName: "flame.fill")
-                                .font(.caption2)
-                                .foregroundStyle(habit.currentStreak > 0 ? Color.orange : Color.secondary)
-                            Text("\(habit.currentStreak)d")
-                                .font(.caption2.weight(.bold).monospacedDigit())
-                                .foregroundStyle(habit.currentStreak > 0 ? Color.orange : Color.secondary)
-                        }
-                    }
-
-                    HStack(spacing: 8) {
-                        statTag("7d", habit.completionRate(lastDays: 7))
-                        statTag("30d", habit.completionRate(lastDays: 30))
-                        statTag("All", habit.allTimeCompletionRate)
-
-                        if habit.reminderEnabled {
-                            Spacer()
-                            Label(habit.formattedReminderTime, systemImage: "bell.fill")
-                                .font(.system(size: 10, weight: .semibold))
-                                .foregroundStyle(.indigo)
-                        }
-                    }
-                }
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(.vertical, 3)
-    }
-
-    private func statTag(_ title: String, _ ratio: Double) -> some View {
-        Text("\(title) \(Int(round(ratio * 100)))%")
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .foregroundStyle(ratio >= 0.8 ? Color.green : (ratio >= 0.4 ? Color.cyan : Color.secondary))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
-    }
-}
-
-// MARK: - ISO-8601 Monday-First 12-Week Consistency Heatmap Grid
-
-private struct ConsistencyHeatmapView: View {
-    let habits: [HabitItem]
-    @Binding var selectedDate: Date?
-
-    private let weeksCount = 12
-    private let daysPerWeek = 7
-    private let mondayFirstLetters = ["M", "T", "W", "T", "F", "S", "S"]
-
-    /// Builds a 12-week ISO-8601 Monday-first grid ending on today.
-    /// Row 0 = Monday, ..., Row 6 = Sunday.
-    private var gridWeeks: [[Date?]] {
-        let cal = ISOWeekCalendar.current
-        let today = cal.startOfDay(for: Date())
-        let currentMonday = ISOWeekCalendar.startOfMondayWeek(for: today)
-
-        guard let firstMonday = cal.date(byAdding: .day, value: -(weeksCount - 1) * 7, to: currentMonday) else {
-            return []
-        }
-
-        var weeks: [[Date?]] = []
-        for weekIdx in 0..<weeksCount {
-            var weekDays: [Date?] = []
-            for dayIdx in 0..<daysPerWeek {
-                let offset = weekIdx * 7 + dayIdx
-                if let cellDate = cal.date(byAdding: .day, value: offset, to: firstMonday),
-                   cellDate <= today {
-                    weekDays.append(cellDate)
-                } else {
-                    weekDays.append(nil)
-                }
-            }
-            weeks.append(weekDays)
-        }
-        return weeks
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(spacing: isExpanded ? 16 : 0) {
             HStack {
-                Text("12-Week Consistency (Mon–Sun)")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.85))
-                Spacer()
-                if let selected = selectedDate {
-                    let info = HabitItem.dailyCompletionSummary(habits: habits, on: selected)
-                    Text("\(selected.formatted(date: .abbreviated, time: .omitted)): \(info.completed)/\(info.scheduled) (\(Int(round(info.ratio * 100)))%)")
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .foregroundStyle(.green)
+                if !isExpanded {
+                    HStack(spacing: 10) {
+                        ZStack {
+                            AmbientBloomRing(
+                                progress: Double(summary.score) / 100.0,
+                                color: ringColor,
+                                lineWidth: 4,
+                                diameter: 34
+                            )
+                            Text("\(summary.score)")
+                                .font(.system(size: 12, weight: .black, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(.white)
+                        }
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("TODAY'S SCORE").eyebrowStyle()
+                            Text(summary.headline)
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .foregroundStyle(.white)
+                        }
+                    }
                 } else {
-                    Text("Tap square for day")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("TODAY'S SCORE").eyebrowStyle()
+                    Spacer()
                 }
+
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    withAnimation(.spring(response: 0.34, dampingFraction: 0.85)) {
+                        isExpanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                        .frame(width: 28, height: 28)
+                        .background(DailyOSTheme.inputSurface, in: Circle())
+                }
+                .buttonStyle(.plain)
             }
 
-            HStack(alignment: .top, spacing: 4) {
-                VStack(spacing: 4) {
-                    ForEach(Array(mondayFirstLetters.enumerated()), id: \.offset) { _, letter in
-                        Text(letter)
-                            .font(.system(size: 8, weight: .bold, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 10, height: 14)
+            if isExpanded {
+                ZStack {
+                    AmbientBloomRing(
+                        progress: Double(summary.score) / 100.0,
+                        color: ringColor,
+                        lineWidth: 14,
+                        diameter: 170
+                    )
+
+                    VStack(spacing: 2) {
+                        Text("\(summary.score)")
+                            .font(.system(size: 56, weight: .black, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(.white)
+                        Text("/ 100")
+                            .font(.system(size: 15, weight: .medium, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(DailyOSTheme.eyebrow)
                     }
                 }
+                .padding(.vertical, 2)
 
-                HStack(spacing: 4) {
-                    ForEach(0..<gridWeeks.count, id: \.self) { weekIndex in
-                        VStack(spacing: 4) {
-                            ForEach(0..<daysPerWeek, id: \.self) { dayIndex in
-                                if let cellDate = gridWeeks[weekIndex][dayIndex] {
-                                    let summary = HabitItem.dailyCompletionSummary(habits: habits, on: cellDate)
-                                    let isSelected = selectedDate.map { ISOWeekCalendar.current.isDate($0, inSameDayAs: cellDate) } ?? false
+                Text(summary.headline)
+                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
 
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(intensityColor(for: summary.ratio))
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 14)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 3)
-                                                .stroke(isSelected ? Color.white : Color.clear, lineWidth: 1.5)
-                                        )
-                                        .onTapGesture {
-                                            selectedDate = cellDate
-                                        }
-                                } else {
-                                    RoundedRectangle(cornerRadius: 3)
-                                        .fill(Color.clear)
-                                        .frame(maxWidth: .infinity)
-                                        .frame(height: 14)
-                                }
+                // 2 x 2 Bento Micro-Tiles
+                LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
+                    scoreBentoTile(title: "HABITS", value: "\(summary.habitsCompleted) / \(summary.habitsTotal)")
+                    scoreBentoTile(title: "FOCUS", value: "\(summary.focusMinutesToday) min")
+                    scoreBentoTile(title: "STREAK", value: summary.globalStreak == 1 ? "1 day" : "\(summary.globalStreak) days")
+                    scoreBentoTile(title: "WAKE", value: summary.wakeCompletedToday ? "Done" : "Pending")
+                }
+            }
+        }
+        .padding(16)
+        .ambientCard(accent: ringColor, cornerRadius: 24, washOpacity: 0.08)
+    }
+
+    private func scoreBentoTile(title: String, value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).eyebrowStyle()
+            Text(value)
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(.white)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(DailyOSTheme.canvas.opacity(0.65), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+    }
+}
+
+// MARK: - Lush Ambient Habit Feed Card with Expanding Radial Particle Burst
+
+private struct HabitFeedCardView: View {
+    let habit: HabitItem
+    let logMap: [String: HabitLog]
+    let onQuickCheckIn: () -> Void
+    let onLongPressQuantity: () -> Void
+
+    @State private var burstTrigger: Int = 0
+
+    private var accent: Color { habit.accentColor }
+
+    private var todayRatio: Double {
+        HabitMetricsEngine.progressRatio(for: habit, on: Date(), logMap: logMap)
+    }
+
+    private var todayValue: Double {
+        HabitMetricsEngine.loggedValue(for: habit, on: Date(), logMap: logMap)
+    }
+
+    private var isCompleteToday: Bool {
+        todayRatio >= 1.0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            // Card Header Row
+            HStack(spacing: 12) {
+                // 38x38 Tinted Rounded-Square Icon Badge
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(accent.opacity(0.18))
+                    .frame(width: 38, height: 38)
+                    .overlay(
+                        Image(systemName: habit.iconName)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(accent)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(habit.title)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Text(HabitMetricsEngine.streakSubtitle(for: habit, logMap: logMap))
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                }
+
+                Spacer(minLength: 8)
+
+                // Interactive One-Tap Check-In Control
+                ZStack {
+                    ParticleBurstOverlay(accent: accent, trigger: burstTrigger)
+
+                    if habit.trackingMode == .quantity {
+                        // Quantity Habit: Circular mini progress ring with integer inside
+                        ZStack {
+                            Circle()
+                                .stroke(accent.opacity(0.22), lineWidth: 3.5)
+                                .frame(width: 36, height: 36)
+                            Circle()
+                                .trim(from: 0, to: todayRatio)
+                                .stroke(accent, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                                .frame(width: 36, height: 36)
+                                .animation(.spring(response: 0.3), value: todayRatio)
+
+                            Text("\(Int(todayValue))")
+                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(isCompleteToday ? accent : Color.white)
+                        }
+                        .frame(width: 40, height: 40)
+                        .contentShape(Circle())
+                        .onTapGesture {
+                            burstTrigger += 1
+                            onQuickCheckIn()
+                        }
+                        .onLongPressGesture(minimumDuration: 0.4) {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            onLongPressQuantity()
+                        }
+                    } else if habit.kind == .quit {
+                        // Quit Habit: Warm circular hand/shield badge
+                        Button {
+                            burstTrigger += 1
+                            onQuickCheckIn()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(isCompleteToday ? accent : DailyOSTheme.inputSurface)
+                                    .frame(width: 36, height: 36)
+                                    .overlay(
+                                        Circle().stroke(isCompleteToday ? accent : accent.opacity(0.45), lineWidth: 1.5)
+                                    )
+                                Image(systemName: isCompleteToday ? "hand.raised.fill" : "shield.slash")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(isCompleteToday ? DailyOSTheme.canvas : accent)
                             }
                         }
+                        .buttonStyle(.plain)
+                    } else {
+                        // Binary Build Habit: Circular check button with radial burst
+                        Button {
+                            if !isCompleteToday {
+                                burstTrigger += 1
+                            }
+                            onQuickCheckIn()
+                        } label: {
+                            ZStack {
+                                Circle()
+                                    .fill(isCompleteToday ? accent : DailyOSTheme.inputSurface)
+                                    .frame(width: 36, height: 36)
+                                    .overlay(
+                                        Circle().stroke(isCompleteToday ? accent : accent.opacity(0.4), lineWidth: 1.5)
+                                    )
+                                    .shadow(color: isCompleteToday ? accent.opacity(0.45) : .clear, radius: 6)
+
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(isCompleteToday ? DailyOSTheme.canvas : Color.white.opacity(0.35))
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
 
-            HStack(spacing: 5) {
-                Spacer()
-                Text("Less")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-                ForEach([0.0, 0.25, 0.5, 0.75, 1.0], id: \.self) { level in
-                    RoundedRectangle(cornerRadius: 2)
-                        .fill(intensityColor(for: level))
-                        .frame(width: 10, height: 10)
-                }
-                Text("More")
-                    .font(.system(size: 9))
-                    .foregroundStyle(.secondary)
-            }
+            // Full-Width Compact Contribution Heatmap Grid (7 rows x 28 weeks)
+            HabitHeatmapGridView(
+                habit: habit,
+                logMap: logMap,
+                weeksCount: 28,
+                showAxes: false
+            )
         }
-    }
-
-    private func intensityColor(for ratio: Double) -> Color {
-        switch ratio {
-        case ..<0.01:
-            return Color.white.opacity(0.08)
-        case 0.01..<0.35:
-            return Color.green.opacity(0.30)
-        case 0.35..<0.65:
-            return Color.green.opacity(0.55)
-        case 0.65..<0.90:
-            return Color.green.opacity(0.78)
-        default:
-            return Color.green
-        }
+        .padding(16)
+        .ambientCard(accent: accent, cornerRadius: 22, washOpacity: 0.09)
     }
 }
 
-private extension Color {
-    static let emeraldAccent = Color(red: 0.12, green: 0.85, blue: 0.55)
+// MARK: - Subtle Expanding Radial Ring & Particle Burst Animation
+
+private struct ParticleBurstOverlay: View {
+    let accent: Color
+    let trigger: Int
+
+    @State private var animate: Bool = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .stroke(accent.opacity(animate ? 0.0 : 0.75), lineWidth: animate ? 0.5 : 2.5)
+                .frame(width: animate ? 88 : 34, height: animate ? 88 : 34)
+
+            ForEach(0..<8, id: \.self) { idx in
+                let angle = Double(idx) * (Double.pi / 4.0)
+                Circle()
+                    .fill(accent)
+                    .frame(width: animate ? 2 : 5, height: animate ? 2 : 5)
+                    .opacity(animate ? 0.0 : 0.95)
+                    .offset(
+                        x: animate ? CGFloat(cos(angle) * 42) : 0,
+                        y: animate ? CGFloat(sin(angle) * 42) : 0
+                    )
+            }
+        }
+        .allowsHitTesting(false)
+        .opacity(trigger == 0 ? 0 : 1)
+        .onChange(of: trigger) { _, _ in
+            animate = false
+            withAnimation(.easeOut(duration: 0.52)) {
+                animate = true
+            }
+        }
+    }
 }

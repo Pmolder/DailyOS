@@ -14,143 +14,88 @@ struct AlarmsListView: View {
     @ObservedObject private var audioManager = AlarmAudioManager.shared
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
 
-    let onOpenSettings: () -> Void
-
     @State private var showingCreateSheet = false
     @State private var editingAlarm: AlarmItem?
 
+    private var formattedTodaySubtitle: String {
+        let f = DateFormatter()
+        f.calendar = ISOWeekCalendar.current
+        f.timeZone = TimeZone.current
+        f.dateFormat = "EEEE, d MMM"
+        return f.string(from: Date())
+    }
+
     var body: some View {
         NavigationStack {
-            List {
-                // 1. Guided Access Anti-Cheat Status Pill
-                Section {
-                    GuidedAccessBannerView(isLocked: alarmEngine.isGuidedAccessEnabled)
-                        .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
-                        .listRowBackground(Color.clear)
-                }
+            ZStack {
+                DailyOSTheme.canvas.ignoresSafeArea()
 
-                // 2. Solar-Orange Overnight Engine Status Card
-                Section {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 12) {
-                            Image(systemName: audioManager.isSilentKeepAliveRunning
-                                  ? "sun.max.fill"
-                                  : "moon.zzz.fill")
-                                .font(.title2)
-                                .foregroundStyle(audioManager.isSilentKeepAliveRunning ? SolarTheme.solarBright : Color.secondary)
-
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 16) {
+                        // 1. Top Header Bar
+                        HStack(alignment: .center, spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(audioManager.isSilentKeepAliveRunning
-                                     ? "Solar Wake Engine Armed"
-                                     : "Solar Wake Engine Standby")
-                                    .font(.subheadline.weight(.bold))
-
-                                Text(audioManager.isSilentKeepAliveRunning
-                                     ? "Silent keep-alive active • Max brightness wake ready"
-                                     : "Enable an alarm to arm overnight audio & idle lock")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                Text("Alarms")
+                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.white)
+                                Text(formattedTodaySubtitle)
+                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.eyebrow)
                             }
+
                             Spacer()
+
+                            FrostedCircleButton(icon: "plus", size: 38) {
+                                showingCreateSheet = true
+                            }
                         }
+                        .padding(.top, 6)
 
-                        HStack(spacing: 6) {
-                            curveBadge("0–30s", "Vib Only 0%", .cyan)
-                            curveBadge("30–60s", "HW 1→15%", SolarTheme.solarBright)
-                            curveBadge("60–90s", "HW 15→50%", .red)
-                        }
+                        // 2. Guided Access Anti-Cheat Status Pill
+                        GuidedAccessBannerView(isLocked: alarmEngine.isGuidedAccessEnabled)
 
-                        if let nextDate = alarmEngine.nextScheduledAlarmDate {
-                            Divider()
-                            HStack {
-                                Label(
-                                    "Next Wake: \(nextDate.formatted(date: .abbreviated, time: .shortened))",
-                                    systemImage: "bell.and.waves.left.and.right"
-                                )
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(SolarTheme.solarBright)
+                        // 3. Solar Wake Engine Overnight Status Card
+                        solarEngineStatusCard
 
-                                Spacer()
+                        // 4. Wake Alarms Feed (100% Empty on First Launch)
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("WAKE ALARMS")
+                                .eyebrowStyle()
+                                .padding(.horizontal, 4)
 
-                                Text("\(notificationScheduler.pendingAlarmBurstCount) burst alerts")
-                                    .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(.secondary)
+                            if alarms.isEmpty {
+                                emptyAlarmsCard
+                            } else {
+                                ForEach(alarms) { alarm in
+                                    AlarmCardRowView(
+                                        alarm: alarm,
+                                        onToggle: { isOn in
+                                            alarm.isEnabled = isOn
+                                            if isOn {
+                                                alarm.lastTriggeredMinuteKey = ""
+                                            }
+                                            SharedModelContainer.shared.save()
+                                            alarmEngine.syncWithAlarms()
+                                        },
+                                        onTapEdit: {
+                                            editingAlarm = alarm
+                                        },
+                                        onTestRing: {
+                                            alarmEngine.triggerAlarm(alarm)
+                                        },
+                                        onDelete: {
+                                            deleteAlarm(alarm)
+                                        }
+                                    )
+                                }
                             }
                         }
                     }
-                    .padding(.vertical, 6)
-                    .listRowBackground(SolarTheme.charcoal)
-                }
-
-                // 3. Wake Alarms List (100% Empty on First Launch)
-                Section("Wake Alarms") {
-                    if alarms.isEmpty {
-                        ContentUnavailableView(
-                            "No Wake Alarms",
-                            systemImage: "alarm.waves.left.and.right",
-                            description: Text("Tap + to create a Solar-Orange alarm with Daily Random physical & brain challenges.")
-                        )
-                        .listRowBackground(SolarTheme.charcoal)
-                    } else {
-                        ForEach(alarms) { alarm in
-                            AlarmRowView(
-                                alarm: alarm,
-                                onToggle: { isOn in
-                                    alarm.isEnabled = isOn
-                                    if isOn {
-                                        alarm.lastTriggeredMinuteKey = ""
-                                    }
-                                    SharedModelContainer.shared.save()
-                                    alarmEngine.syncWithAlarms()
-                                },
-                                onTapEdit: {
-                                    editingAlarm = alarm
-                                },
-                                onTestRing: {
-                                    alarmEngine.triggerAlarm(alarm)
-                                }
-                            )
-                            .listRowBackground(SolarTheme.charcoal)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                Button(role: .destructive) {
-                                    deleteAlarm(alarm)
-                                } label: {
-                                    Label("Delete", systemImage: "trash")
-                                }
-                            }
-                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                Button {
-                                    alarmEngine.triggerAlarm(alarm)
-                                } label: {
-                                    Label("Test Wake", systemImage: "sun.max.fill")
-                                }
-                                .tint(SolarTheme.solarCore)
-                            }
-                        }
-                    }
+                    .padding(.horizontal, 18)
+                    .padding(.bottom, 32)
                 }
             }
-            .scrollContentBackground(.hidden)
-            .background(SolarTheme.obsidian)
-            .listStyle(.insetGrouped)
-            .navigationTitle("Wake")
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onOpenSettings) {
-                        Image(systemName: "gearshape.fill")
-                    }
-                    .accessibilityLabel("Settings and Backup")
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingCreateSheet = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.title3)
-                    }
-                    .accessibilityLabel("Add Wake Alarm")
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
             .onAppear {
                 alarmEngine.refreshGuidedAccessStatus()
             }
@@ -163,18 +108,110 @@ struct AlarmsListView: View {
         }
     }
 
-    private func curveBadge(_ time: String, _ detail: String, _ color: Color) -> some View {
-        VStack(spacing: 1) {
-            Text(time)
-                .font(.caption2.weight(.bold).monospacedDigit())
-                .foregroundStyle(color)
-            Text(detail)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(.secondary)
+    // MARK: - Solar Wake Engine Status Card
+
+    private var solarEngineStatusCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 12) {
+                Image(systemName: audioManager.isSilentKeepAliveRunning ? "sun.max.fill" : "moon.zzz.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(audioManager.isSilentKeepAliveRunning ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        (audioManager.isSilentKeepAliveRunning ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow).opacity(0.15),
+                        in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(audioManager.isSilentKeepAliveRunning
+                         ? "Solar Wake Engine Armed"
+                         : "Solar Wake Engine Standby")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+
+                    Text(audioManager.isSilentKeepAliveRunning
+                         ? "Silent keep-alive active • Max brightness wake ready"
+                         : "Enable an alarm to arm overnight audio & idle lock")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                curveBadge("0–30s", "Vib Only 0%", DailyOSTheme.skyGlow)
+                curveBadge("30–60s", "HW 1→15%", DailyOSTheme.solarAccent)
+                curveBadge("60–90s", "HW 15→50%", Color(hex: "#FF6B6B"))
+            }
+
+            if let nextDate = alarmEngine.nextScheduledAlarmDate {
+                Divider().overlay(DailyOSTheme.hairline)
+                HStack {
+                    Label(
+                        "Next Wake: \(nextDate.formatted(date: .abbreviated, time: .shortened))",
+                        systemImage: "bell.and.waves.left.and.right"
+                    )
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .foregroundStyle(DailyOSTheme.solarAccent)
+
+                    Spacer()
+
+                    Text("\(notificationScheduler.pendingAlarmBurstCount) burst alerts")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                }
+            }
+        }
+        .padding(16)
+        .ambientCard(
+            accent: audioManager.isSilentKeepAliveRunning ? DailyOSTheme.solarAccent : nil,
+            cornerRadius: 22,
+            washOpacity: 0.085
+        )
+    }
+
+    private var emptyAlarmsCard: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "alarm.waves.left.and.right")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(DailyOSTheme.solarAccent)
+                .frame(width: 56, height: 56)
+                .background(DailyOSTheme.solarAccent.opacity(0.14), in: Circle())
+
+            Text("No Wake Alarms")
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.white)
+
+            Text("Tap + to create a wake alarm with Daily Random physical missions and Stage-2 brain games.")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(DailyOSTheme.eyebrow)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 10)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 6)
-        .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.vertical, 30)
+        .padding(.horizontal, 18)
+        .ambientCard(cornerRadius: 22)
+    }
+
+    private func curveBadge(_ time: String, _ detail: String, _ color: Color) -> some View {
+        VStack(spacing: 2) {
+            Text(time)
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(color)
+            Text(detail)
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white.opacity(0.65))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 7)
+        .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(color.opacity(0.22), lineWidth: 1)
+        )
     }
 
     private func deleteAlarm(_ alarm: AlarmItem) {
@@ -190,103 +227,155 @@ struct AlarmsListView: View {
 private struct GuidedAccessBannerView: View {
     let isLocked: Bool
 
+    private var accent: Color {
+        isLocked ? DailyOSTheme.emerald : Color(hex: "#FF6B6B")
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: isLocked ? "lock.shield.fill" : "exclamationmark.shield.fill")
-                .font(.headline)
-                .foregroundStyle(isLocked ? Color.green : Color.red)
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(accent)
 
             Text(isLocked
                  ? "GUIDED ACCESS: LOCKED"
                  : "GUIDED ACCESS: OFF — TRIPLE-CLICK SIDE BUTTON BEFORE SLEEP")
-                .font(.caption.weight(.heavy))
-                .foregroundStyle(isLocked ? Color.green : Color.red)
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .tracking(0.5)
+                .foregroundStyle(accent)
                 .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(
-            (isLocked ? Color.green : Color.red).opacity(0.15),
-            in: RoundedRectangle(cornerRadius: 14)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 14)
-                .stroke((isLocked ? Color.green : Color.red).opacity(0.55), lineWidth: 1.5)
-        )
+        .ambientCard(accent: accent, cornerRadius: 16, washOpacity: 0.12)
     }
 }
 
-// MARK: - Obsidian & Solar-Orange Alarm Card Row
+// MARK: - Midnight Obsidian Alarm Card Row (Warm Ambient Wash When Enabled)
 
-private struct AlarmRowView: View {
+private struct AlarmCardRowView: View {
     let alarm: AlarmItem
     let onToggle: (Bool) -> Void
     let onTapEdit: () -> Void
     let onTestRing: () -> Void
+    let onDelete: () -> Void
 
     var body: some View {
-        HStack(alignment: .center, spacing: 12) {
-            Button(action: onTapEdit) {
-                VStack(alignment: .leading, spacing: 7) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(alarm.formattedTime)
-                            .font(.system(size: 38, weight: .black, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(alarm.isEnabled ? Color.white : Color.secondary)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .center, spacing: 12) {
+                Button(action: onTapEdit) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(alarm.formattedTime)
+                                .font(.system(size: 42, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(alarm.isEnabled ? Color.white : Color.white.opacity(0.36))
 
-                        Text(alarm.displayLabel)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.88) : Color.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Text(alarm.repeatSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-
-                    // Stage-1 Physical + Stage-2 Brain Pill Badges
-                    HStack(spacing: 6) {
-                        Label(alarm.missionSummary, systemImage: alarm.missionType.iconName)
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 4)
-                            .background(SolarTheme.solarCore.opacity(0.18), in: Capsule())
-                            .foregroundStyle(SolarTheme.solarBright)
-
-                        if alarm.brainGameMode != .off {
-                            Label(alarm.brainGameMode.shortBadge, systemImage: alarm.brainGameMode.iconName)
-                                .font(.caption2.weight(.bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Color.white.opacity(0.08), in: Capsule())
-                                .foregroundStyle(.white.opacity(0.85))
+                            Text(alarm.displayLabel)
+                                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.84) : DailyOSTheme.eyebrow)
+                                .lineLimit(1)
                         }
                     }
                 }
-            }
-            .buttonStyle(.plain)
+                .buttonStyle(.plain)
 
-            Spacer()
+                Spacer()
 
-            Toggle(
-                "",
-                isOn: Binding(
-                    get: { alarm.isEnabled },
-                    set: { onToggle($0) }
+                Toggle(
+                    "",
+                    isOn: Binding(
+                        get: { alarm.isEnabled },
+                        set: { onToggle($0) }
+                    )
                 )
-            )
-            .labelsHidden()
-            .tint(SolarTheme.solarCore)
+                .labelsHidden()
+                .tint(DailyOSTheme.solarAccent)
+            }
+
+            // ISO-8601 Mon–Sun Mini Weekday Indicator Pills
+            HStack(spacing: 5) {
+                ForEach(Weekday.allCases) { day in
+                    let active = alarm.repeatDays.contains(day.rawValue)
+                    Text(String(day.shortName.prefix(1)))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .frame(width: 24, height: 22)
+                        .background(
+                            active
+                                ? (alarm.isEnabled ? DailyOSTheme.solarAccent.opacity(0.22) : Color.white.opacity(0.08))
+                                : DailyOSTheme.inputSurface,
+                            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        )
+                        .foregroundStyle(
+                            active
+                                ? (alarm.isEnabled ? DailyOSTheme.solarAccent : Color.white.opacity(0.55))
+                                : DailyOSTheme.eyebrow.opacity(0.6)
+                        )
+                }
+
+                Spacer()
+
+                Button(action: onTestRing) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "sun.max.fill")
+                            .font(.system(size: 10, weight: .bold))
+                        Text("Test")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                    }
+                    .foregroundStyle(DailyOSTheme.solarAccent)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(DailyOSTheme.solarAccent.opacity(0.14), in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Stage-1 Physical Mission + Stage-2 Brain Game Pills
+            HStack(spacing: 8) {
+                Label(alarm.missionSummary, systemImage: alarm.missionType.iconName)
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(
+                        (alarm.isEnabled ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow).opacity(0.15),
+                        in: Capsule()
+                    )
+                    .foregroundStyle(alarm.isEnabled ? DailyOSTheme.solarAccent : Color.white.opacity(0.55))
+
+                if alarm.brainGameMode != .off {
+                    Label(alarm.brainGameMode.shortBadge, systemImage: alarm.brainGameMode.iconName)
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(DailyOSTheme.inputSurface, in: Capsule())
+                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                        .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.85) : DailyOSTheme.eyebrow)
+                }
+
+                Spacer(minLength: 0)
+            }
         }
-        .padding(.vertical, 4)
+        .padding(16)
+        .ambientCard(
+            accent: alarm.isEnabled ? DailyOSTheme.solarAccent : nil,
+            cornerRadius: 22,
+            washOpacity: 0.095
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            onTapEdit()
+        }
         .contextMenu {
             Button(action: onTestRing) {
                 Label("Test Solar Wake & Challenges", systemImage: "sun.max.fill")
             }
             Button(action: onTapEdit) {
                 Label("Edit Alarm", systemImage: "pencil")
+            }
+            Button(role: .destructive, action: onDelete) {
+                Label("Delete Alarm", systemImage: "trash")
             }
         }
     }

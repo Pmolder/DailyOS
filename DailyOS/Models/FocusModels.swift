@@ -151,8 +151,19 @@ struct DailyOSBackupPayload: Codable {
     var defaultReflexThresholdMs: Int?
     var alarms: [AlarmBackupDTO]
     var habits: [HabitBackupDTO]
+    var habitLogs: [HabitLogBackupDTO]?
     var manualFocusBlocks: [ManualFocusBlockDTO]
     var focusCheckInLogs: [FocusCheckInLogDTO]
+}
+
+struct HabitLogBackupDTO: Codable {
+    var id: UUID
+    var habitID: UUID
+    var dayKey: String
+    var date: Date
+    var value: Double
+    var note: String?
+    var updatedAt: Date
 }
 
 struct AlarmBackupDTO: Codable {
@@ -178,6 +189,12 @@ struct HabitBackupDTO: Codable {
     var title: String
     var notes: String
     var iconName: String
+    var colorHex: String?
+    var kindRaw: String?
+    var trackingModeRaw: String?
+    var dailyTarget: Double?
+    var unitLabel: String?
+    var isArchived: Bool?
     var timeOfDayRaw: String
     var sortOrder: Int
     var reminderEnabled: Bool

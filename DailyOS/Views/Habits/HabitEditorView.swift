@@ -1,185 +1,431 @@
 import SwiftUI
 import SwiftData
 
+/// "Your habits, your style." — Create / Edit Habit Sheet matching the Midnight Obsidian reference.
 struct HabitEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
 
     let habitToEdit: HabitItem?
 
-    @State private var title: String = ""
-    @State private var notes: String = ""
-    @State private var iconName: String = "checkmark.seal.fill"
-    @State private var timeOfDay: HabitTimeOfDay = .morning
+    @State private var name: String = ""
+    @State private var subtitle: String = ""
+    @State private var iconName: String = "drop.fill"
+    @State private var colorHex: String = "#38BDF8"
+    @State private var kind: HabitKind = .build
+    @State private var trackingMode: HabitTrackingMode = .binary
+    @State private var dailyTarget: Int = 8
+    @State private var unitLabel: String = ""
+    @State private var isDailyFrequency: Bool = true
+    @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6, 7, 1]
     @State private var reminderEnabled: Bool = false
     @State private var reminderTime: Date = Date()
-    @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6, 7, 1]
     @State private var soundOption: NotificationSoundOption = .chimeBell
 
-    private let availableIcons: [String] = [
-        "drop.fill",
-        "sun.max.fill",
-        "figure.strengthtraining.traditional",
-        "book.fill",
-        "brain.head.profile",
-        "lock.shield.fill",
-        "pills.fill",
-        "leaf.fill",
-        "checkmark.seal.fill",
-        "flame.fill"
+    @State private var showingIconPicker = false
+
+    private var selectedAccent: Color {
+        Color(hex: colorHex)
+    }
+
+    private let decorativeBgIcons: [String] = [
+        "figure.run", "drop.fill", "book.fill", "flame.fill", "brain.head.profile", "moon.stars.fill", "heart.fill",
+        "dumbbell.fill", "cup.and.saucer.fill", "pencil", "bolt.fill", "leaf.fill", "sun.max.fill", "bicycle",
+        "bed.double.fill", "music.note", "laptopcomputer", "figure.mind.and.body", "pills.fill", "target", "sparkles"
     ]
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section("Habit Details") {
-                    TextField("Habit Title", text: $title)
-                    TextField("Notes (Optional)", text: $notes)
+        ZStack(alignment: .bottom) {
+            DailyOSTheme.canvas.ignoresSafeArea()
 
-                    Picker("Time of Day", selection: $timeOfDay) {
-                        ForEach(HabitTimeOfDay.allCases) { segment in
-                            Label(segment.displayName, systemImage: segment.iconName)
-                                .tag(segment)
-                        }
+            VStack(spacing: 0) {
+                // Header: Circular X Close Button + Centered Title
+                HStack {
+                    FrostedCircleButton(icon: "xmark", size: 36) {
+                        AlarmEngine.shared.stopPreview()
+                        dismiss()
                     }
-                    .pickerStyle(.segmented)
+                    Spacer()
+                    Text(habitToEdit == nil ? "New Habit" : "Edit Habit")
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .foregroundStyle(.white)
+                    Spacer()
+                    Color.clear.frame(width: 36, height: 36)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 14)
+                .padding(.bottom, 8)
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Icon")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 10) {
-                                ForEach(availableIcons, id: \.self) { icon in
-                                    let selected = iconName == icon
-                                    Button {
-                                        iconName = icon
-                                    } label: {
-                                        Image(systemName: icon)
-                                            .font(.title3)
-                                            .frame(width: 40, height: 40)
-                                            .background(
-                                                selected ? Color.green : Color.secondary.opacity(0.18),
-                                                in: RoundedRectangle(cornerRadius: 10)
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 22) {
+                        // Hero Icon Selector with Radial Faint Decorative Background Grid
+                        ZStack {
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14), count: 7), spacing: 14) {
+                                ForEach(Array(decorativeBgIcons.enumerated()), id: \.offset) { _, sym in
+                                    Image(systemName: sym)
+                                        .font(.system(size: 16, weight: .regular))
+                                        .foregroundStyle(selectedAccent.opacity(0.08))
+                                }
+                            }
+                            .mask(
+                                RadialGradient(
+                                    colors: [.white, .white.opacity(0.35), .clear],
+                                    center: .center,
+                                    startRadius: 10,
+                                    endRadius: 155
+                                )
+                            )
+                            .allowsHitTesting(false)
+
+                            VStack(spacing: 10) {
+                                Button {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    showingIconPicker = true
+                                } label: {
+                                    ZStack(alignment: .bottomTrailing) {
+                                        Circle()
+                                            .fill(selectedAccent.opacity(0.20))
+                                            .frame(width: 84, height: 84)
+                                            .overlay(
+                                                Circle().stroke(selectedAccent.opacity(0.35), lineWidth: 1.5)
                                             )
-                                            .foregroundStyle(selected ? Color.black : Color.primary)
+                                            .overlay(
+                                                Image(systemName: iconName)
+                                                    .font(.system(size: 34, weight: .semibold))
+                                                    .foregroundStyle(selectedAccent)
+                                            )
+
+                                        Circle()
+                                            .fill(selectedAccent)
+                                            .frame(width: 26, height: 26)
+                                            .overlay(
+                                                Image(systemName: "pencil")
+                                                    .font(.system(size: 12, weight: .bold))
+                                                    .foregroundStyle(DailyOSTheme.canvas)
+                                            )
+                                            .offset(x: 2, y: 2)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                Button("Change icon") {
+                                    showingIconPicker = true
+                                }
+                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                .foregroundStyle(selectedAccent)
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 6)
+
+                        // NAME Input
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("NAME").eyebrowStyle()
+                            TextField("Habit name", text: $name)
+                                .font(.system(size: 16, weight: .medium, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 14)
+                                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+                        }
+
+                        // DESCRIPTION Input
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("DESCRIPTION").eyebrowStyle()
+                            TextField("Short motivation or description", text: $subtitle)
+                                .font(.system(size: 15, weight: .regular, design: .rounded))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 14)
+                                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+                        }
+
+                        // Curated 21-Color Swatch Grid (3 x 7)
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("COLOR").eyebrowStyle()
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 7), spacing: 10) {
+                                ForEach(DailyOSTheme.habitPaletteHex, id: \.self) { hex in
+                                    let isSelected = colorHex.uppercased() == hex.uppercased()
+                                    let swatchColor = Color(hex: hex)
+                                    Button {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        colorHex = hex
+                                    } label: {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                .fill(swatchColor)
+                                                .frame(width: 36, height: 36)
+
+                                            if isSelected {
+                                                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                                    .stroke(swatchColor, lineWidth: 2)
+                                                    .frame(width: 44, height: 44)
+                                            }
+                                        }
+                                        .frame(width: 44, height: 44)
                                     }
                                     .buttonStyle(.plain)
                                 }
                             }
                         }
-                    }
-                    .padding(.vertical, 4)
-                }
 
-                Section("Schedule (Mon–Sun) & Optional Reminder") {
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("Scheduled Days")
-                                .font(.subheadline)
-                            Spacer()
-                            Text(Weekday.formatSummary(for: repeatDays))
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.green)
-                        }
+                        // HABIT TYPE Segmented Picker (Build A Habit vs Quit A Habit)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("HABIT TYPE").eyebrowStyle()
 
-                        HStack(spacing: 6) {
-                            ForEach(Weekday.allCases) { day in
-                                let isSelected = repeatDays.contains(day.rawValue)
-                                Button {
-                                    if isSelected && repeatDays.count > 1 {
-                                        repeatDays.remove(day.rawValue)
-                                    } else {
-                                        repeatDays.insert(day.rawValue)
+                            HStack(spacing: 4) {
+                                ForEach(HabitKind.allCases) { option in
+                                    let selected = kind == option
+                                    Button {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        withAnimation(.spring(response: 0.25)) {
+                                            kind = option
+                                            if option == .quit {
+                                                trackingMode = .binary
+                                            }
+                                        }
+                                    } label: {
+                                        Text(option.displayTitle)
+                                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 11)
+                                            .background(
+                                                selected ? DailyOSTheme.buttonSurface : Color.clear,
+                                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                            )
                                     }
-                                } label: {
-                                    Text(day.shortName)
-                                        .font(.caption.weight(.bold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 8)
-                                        .background(
-                                            isSelected ? Color.green : Color.secondary.opacity(0.18),
-                                            in: RoundedRectangle(cornerRadius: 8)
-                                        )
-                                        .foregroundStyle(isSelected ? Color.black : Color.primary)
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
+                            }
+                            .padding(4)
+                            .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+
+                            Text(kind.helperCaption)
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                                .frame(maxWidth: .infinity, alignment: .center)
+                        }
+
+                        // TRACKING MODE (Simple Check-in vs Numeric Goal)
+                        if kind == .build {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("TRACKING").eyebrowStyle()
+
+                                HStack(spacing: 4) {
+                                    ForEach(HabitTrackingMode.allCases) { mode in
+                                        let selected = trackingMode == mode
+                                        Button {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                            withAnimation(.spring(response: 0.25)) {
+                                                trackingMode = mode
+                                            }
+                                        } label: {
+                                            Text(mode.displayTitle)
+                                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 11)
+                                                .background(
+                                                    selected ? DailyOSTheme.buttonSurface : Color.clear,
+                                                    in: RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                                )
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(4)
+                                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+
+                                if trackingMode == .quantity {
+                                    VStack(spacing: 12) {
+                                        Stepper("Daily Goal: \(dailyTarget)", value: $dailyTarget, in: 1...500)
+                                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(.white)
+
+                                        TextField("Unit (e.g., glasses, pages, min)", text: $unitLabel)
+                                            .font(.system(size: 14, weight: .medium, design: .rounded))
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 10)
+                                            .background(DailyOSTheme.canvas, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                            .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+                                    }
+                                    .padding(14)
+                                    .ambientCard(cornerRadius: 14)
+                                }
                             }
                         }
+
+                        // FREQUENCY (Daily or ISO-8601 Monday–Sunday Pills)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("FREQUENCY").eyebrowStyle()
+                                Spacer()
+                                Toggle("Daily", isOn: $isDailyFrequency)
+                                    .labelsHidden()
+                                    .tint(selectedAccent)
+                                    .onChange(of: isDailyFrequency) { _, isDaily in
+                                        if isDaily {
+                                            repeatDays = [2, 3, 4, 5, 6, 7, 1]
+                                        }
+                                    }
+                            }
+
+                            if !isDailyFrequency {
+                                HStack(spacing: 6) {
+                                    ForEach(Weekday.allCases) { day in
+                                        let active = repeatDays.contains(day.rawValue)
+                                        Button {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                            if active && repeatDays.count > 1 {
+                                                repeatDays.remove(day.rawValue)
+                                            } else {
+                                                repeatDays.insert(day.rawValue)
+                                            }
+                                        } label: {
+                                            Text(day.singleLetter)
+                                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                                .frame(maxWidth: .infinity)
+                                                .frame(height: 38)
+                                                .background(
+                                                    active ? selectedAccent : DailyOSTheme.inputSurface,
+                                                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                )
+                                                .foregroundStyle(active ? DailyOSTheme.canvas : DailyOSTheme.eyebrow)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+
+                        // OPTIONAL REMINDER
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("REMINDER").eyebrowStyle()
+                                Spacer()
+                                Toggle("Reminder", isOn: $reminderEnabled)
+                                    .labelsHidden()
+                                    .tint(selectedAccent)
+                            }
+
+                            if reminderEnabled {
+                                VStack(spacing: 12) {
+                                    DatePicker("Time", selection: $reminderTime, displayedComponents: .hourAndMinute)
+                                        .foregroundStyle(.white)
+                                    HStack {
+                                        Text("Sound")
+                                            .font(.subheadline)
+                                            .foregroundStyle(.white)
+                                        Spacer()
+                                        Picker("Sound", selection: $soundOption) {
+                                            ForEach(NotificationSoundOption.allCases) { opt in
+                                                Text(opt.displayName).tag(opt)
+                                            }
+                                        }
+                                        .tint(selectedAccent)
+                                    }
+                                }
+                                .padding(14)
+                                .ambientCard(cornerRadius: 14)
+                            }
+                        }
+
+                        // Subtle Delete Button when editing an existing habit
+                        if habitToEdit != nil {
+                            Button(role: .destructive) {
+                                deleteHabit()
+                            } label: {
+                                Text("Delete Habit")
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(.red)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                            }
+                        }
+
+                        Spacer(minLength: 92)
                     }
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, 18)
+                    .padding(.top, 6)
+                }
+            }
 
-                    Toggle("Local Reminder Notification", isOn: $reminderEnabled)
+            // Sticky Full-Width Pill Save CTA Tinted in Selected Habit Color
+            VStack(spacing: 0) {
+                LinearGradient(
+                    colors: [DailyOSTheme.canvas.opacity(0.0), DailyOSTheme.canvas],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 22)
 
-                    if reminderEnabled {
-                        DatePicker(
-                            "Reminder Time",
-                            selection: $reminderTime,
-                            displayedComponents: .hourAndMinute
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    saveHabit()
+                    dismiss()
+                } label: {
+                    Text("Save")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.canvas)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(
+                            name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                ? selectedAccent.opacity(0.35)
+                                : selectedAccent,
+                            in: Capsule()
                         )
-
-                        Picker("Notification Sound", selection: $soundOption) {
-                            ForEach(NotificationSoundOption.allCases) { sound in
-                                Text(sound.displayName).tag(sound)
-                            }
-                        }
-
-                        Button {
-                            AlarmEngine.shared.previewNotificationSound(soundOption)
-                        } label: {
-                            Label("Preview Sound", systemImage: "speaker.wave.2.fill")
-                        }
-                    }
                 }
+                .buttonStyle(.plain)
+                .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .padding(.horizontal, 18)
+                .padding(.bottom, 16)
+                .background(DailyOSTheme.canvas)
             }
-            .navigationTitle(habitToEdit == nil ? "New Habit" : "Edit Habit")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") {
-                        AlarmEngine.shared.stopPreview()
-                        dismiss()
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
-                        AlarmEngine.shared.stopPreview()
-                        saveHabit()
-                        dismiss()
-                    }
-                    .fontWeight(.bold)
-                    .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            }
-            .onAppear(perform: loadInitialValues)
-            .onDisappear {
-                AlarmEngine.shared.stopPreview()
-            }
+        }
+        .preferredColorScheme(.dark)
+        .environment(\.calendar, ISOWeekCalendar.current)
+        .environment(\.locale, Locale(identifier: "en_GB"))
+        .onAppear(perform: loadInitialValues)
+        .sheet(isPresented: $showingIconPicker) {
+            CategorizedIconPickerSheet(selectedIcon: $iconName, accent: selectedAccent)
         }
     }
 
     private func loadInitialValues() {
-        let calendar = ISOWeekCalendar.current
+        let cal = ISOWeekCalendar.current
         if let habit = habitToEdit {
-            title = habit.title
-            notes = habit.notes
+            name = habit.title
+            subtitle = habit.notes
             iconName = habit.iconName
-            timeOfDay = habit.timeOfDay
+            colorHex = habit.colorHex
+            kind = habit.kind
+            trackingMode = habit.trackingMode
+            dailyTarget = max(1, Int(habit.dailyTarget))
+            unitLabel = habit.unitLabel
+            repeatDays = habit.repeatDays.isEmpty ? [2, 3, 4, 5, 6, 7, 1] : habit.repeatDays
+            isDailyFrequency = repeatDays.count == 7
             reminderEnabled = habit.reminderEnabled
-            repeatDays = habit.repeatDays.isEmpty ? Set(1...7) : habit.repeatDays
             soundOption = habit.soundOption
 
-            var comps = calendar.dateComponents([.year, .month, .day], from: Date())
+            var comps = cal.dateComponents([.year, .month, .day], from: Date())
             comps.hour = habit.reminderHour
             comps.minute = habit.reminderMinute
-            reminderTime = calendar.date(from: comps) ?? Date()
+            reminderTime = cal.date(from: comps) ?? Date()
         } else {
-            var comps = calendar.dateComponents([.year, .month, .day], from: Date())
+            var comps = cal.dateComponents([.year, .month, .day], from: Date())
             comps.hour = 9
             comps.minute = 0
-            reminderTime = calendar.date(from: comps) ?? Date()
-            title = ""
-            notes = ""
+            reminderTime = cal.date(from: comps) ?? Date()
+            name = ""
+            subtitle = ""
+            unitLabel = ""
         }
     }
 
@@ -187,34 +433,42 @@ struct HabitEditorView: View {
         let comps = ISOWeekCalendar.current.dateComponents([.hour, .minute], from: reminderTime)
         let hour = comps.hour ?? 9
         let minute = comps.minute ?? 0
-        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanTitle.isEmpty else { return }
+        let cleanName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanName.isEmpty else { return }
+
+        let finalDays: Set<Int> = isDailyFrequency ? [2, 3, 4, 5, 6, 7, 1] : repeatDays
+        let finalTarget = trackingMode == .quantity ? Double(max(1, dailyTarget)) : 1.0
 
         if let habit = habitToEdit {
-            habit.title = cleanTitle
-            habit.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
+            habit.title = cleanName
+            habit.notes = subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
             habit.iconName = iconName
-            habit.timeOfDay = timeOfDay
+            habit.colorHex = colorHex
+            habit.kind = kind
+            habit.trackingMode = kind == .quit ? .binary : trackingMode
+            habit.dailyTarget = finalTarget
+            habit.unitLabel = unitLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            habit.repeatDays = finalDays
             habit.reminderEnabled = reminderEnabled
             habit.reminderHour = hour
             habit.reminderMinute = minute
-            habit.repeatDays = repeatDays
             habit.soundOption = soundOption
         } else {
-            let existingInSegment = SharedModelContainer.shared.fetchHabits()
-                .filter { $0.timeOfDay == timeOfDay }
-            let nextOrder = (existingInSegment.map(\.sortOrder).max() ?? -1) + 1
-
+            let nextOrder = (SharedModelContainer.shared.fetchHabits().map(\.sortOrder).max() ?? -1) + 1
             let newHabit = HabitItem(
-                title: cleanTitle,
-                notes: notes.trimmingCharacters(in: .whitespacesAndNewlines),
+                title: cleanName,
+                notes: subtitle.trimmingCharacters(in: .whitespacesAndNewlines),
                 iconName: iconName,
-                timeOfDay: timeOfDay,
+                colorHex: colorHex,
+                kind: kind,
+                trackingMode: kind == .quit ? .binary : trackingMode,
+                dailyTarget: finalTarget,
+                unitLabel: unitLabel.trimmingCharacters(in: .whitespacesAndNewlines),
                 sortOrder: nextOrder,
                 reminderEnabled: reminderEnabled,
                 reminderHour: hour,
                 reminderMinute: minute,
-                repeatDays: repeatDays,
+                repeatDays: finalDays,
                 soundOption: soundOption
             )
             modelContext.insert(newHabit)
@@ -225,5 +479,81 @@ struct HabitEditorView: View {
             _ = await NotificationScheduler.shared.requestAuthorizationIfNeeded()
             await NotificationScheduler.shared.rescheduleAll()
         }
+    }
+
+    private func deleteHabit() {
+        guard let habit = habitToEdit else { return }
+        let logs = SharedModelContainer.shared.fetchHabitLogs(for: habit.id)
+        for log in logs { modelContext.delete(log) }
+        modelContext.delete(habit)
+        SharedModelContainer.shared.save()
+        Task { await NotificationScheduler.shared.rescheduleAll() }
+        dismiss()
+    }
+}
+
+// MARK: - Categorized SF Symbol Picker Sheet
+
+private struct CategorizedIconPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var selectedIcon: String
+    let accent: Color
+
+    private let categories: [(title: String, icons: [String])] = [
+        ("Fitness", ["figure.run", "dumbbell.fill", "figure.strengthtraining.functional", "bicycle", "figure.walk", "figure.pool.swim", "flame.fill", "shoeprints.fill"]),
+        ("Health", ["drop.fill", "heart.fill", "pills.fill", "bed.double.fill", "fork.knife", "carrot.fill", "hand.raised.fill", "lungs.fill"]),
+        ("Mind", ["figure.mind.and.body", "brain.head.profile", "moon.stars.fill", "sun.max.fill", "sparkles", "leaf.fill", "wind", "eye.fill"]),
+        ("Learning", ["book.fill", "graduationcap.fill", "pencil.and.outline", "globe", "character.book.closed.fill", "headphones", "music.note", "lightbulb.fill"]),
+        ("Productivity", ["laptopcomputer", "checkmark.seal.fill", "target", "timer", "bolt.fill", "briefcase.fill", "calendar", "tray.full.fill"]),
+        ("Lifestyle", ["cup.and.saucer.fill", "house.fill", "banknote.fill", "camera.fill", "guitars.fill", "paintbrush.fill", "pawprint.fill", "airplane"])
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    ForEach(categories, id: \.title) { category in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(category.title).eyebrowStyle()
+
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
+                                ForEach(category.icons, id: \.self) { sym in
+                                    let isSelected = selectedIcon == sym
+                                    Button {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        selectedIcon = sym
+                                        dismiss()
+                                    } label: {
+                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                            .fill(isSelected ? accent.opacity(0.24) : DailyOSTheme.card)
+                                            .frame(height: 54)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                    .stroke(isSelected ? accent : DailyOSTheme.hairline, lineWidth: isSelected ? 1.5 : 1)
+                                            )
+                                            .overlay(
+                                                Image(systemName: sym)
+                                                    .font(.system(size: 22, weight: .semibold))
+                                                    .foregroundStyle(isSelected ? accent : Color.white.opacity(0.85))
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+                .padding(18)
+            }
+            .background(DailyOSTheme.canvas.ignoresSafeArea())
+            .navigationTitle("Choose Icon")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") { dismiss() }
+                }
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }

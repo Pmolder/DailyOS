@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UIKit
 
 struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
@@ -8,36 +9,47 @@ struct ContentView: View {
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
 
     @State private var selectedTab: Int = 0
-    @State private var showingSettingsSheet: Bool = false
+
+    init() {
+        let appearance = UITabBarAppearance()
+        appearance.configureWithDefaultBackground()
+        appearance.backgroundColor = UIColor(red: 0.055, green: 0.055, blue: 0.075, alpha: 0.94)
+        appearance.shadowColor = UIColor.white.withAlphaComponent(0.08)
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            AlarmsListView(onOpenSettings: { showingSettingsSheet = true })
-                .tabItem {
-                    Label("Wake", systemImage: "alarm.waves.left.and.right.fill")
-                }
-                .tag(0)
-
-            HabitsListView(onOpenSettings: { showingSettingsSheet = true })
+            HabitsListView()
                 .tabItem {
                     Label("Habits", systemImage: "square.grid.3x3.fill")
                 }
+                .tag(0)
+
+            AlarmsListView()
+                .tabItem {
+                    Label("Alarms", systemImage: "alarm.waves.left.and.right.fill")
+                }
                 .tag(1)
 
-            FocusTabView(onOpenSettings: { showingSettingsSheet = true })
+            FocusTabView(onOpenSettings: { selectedTab = 3 })
                 .tabItem {
-                    Label("Focus", systemImage: "camera.viewfinder")
+                    Label("Focus", systemImage: "timer")
                 }
                 .tag(2)
+
+            SettingsView()
+                .tabItem {
+                    Label("Settings", systemImage: "gearshape.fill")
+                }
+                .tag(3)
         }
-        .tint(SolarTheme.solarCore)
+        .tint(DailyOSTheme.skyGlow)
         .preferredColorScheme(.dark)
         .environment(\.calendar, ISOWeekCalendar.current)
         .environment(\.locale, Locale(identifier: "en_GB"))
-        .sheet(isPresented: $showingSettingsSheet) {
-            SettingsView()
-        }
-        // Locked full-screen Wake Alarm cover (highest priority)
+        // Locked full-screen Wake Alarm cover (highest priority — Solar-Orange theme)
         .fullScreenCover(
             item: Binding(
                 get: { alarmEngine.activeRingingAlarm },
