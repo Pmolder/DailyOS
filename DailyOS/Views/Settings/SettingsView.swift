@@ -5,7 +5,7 @@ import EventKit
 import UniformTypeIdentifiers
 import UIKit
 
-/// Compact Settings, Google OAuth Integration & SideStore JSON Backup sheet.
+/// Compact Settings, Wake QR Registration, Brain Game Sandbox, Google OAuth & SideStore JSON Backup sheet.
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -13,6 +13,16 @@ struct SettingsView: View {
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
     @ObservedObject private var googleAuth = GoogleAuthService.shared
+
+    // Wake QR / Barcode State
+    @State private var isWakeQRRegistered: Bool = WakeQRStorage.isRegistered
+    @State private var wakeQRTruncated: String = WakeQRStorage.truncatedDisplay
+    @State private var showingQRRegistrationSheet: Bool = false
+
+    // Reflex Strike Threshold & Brain Game Practice Sandbox
+    @State private var defaultReflexThresholdMs: Int = WakeQRStorage.defaultReflexThresholdMs
+    @State private var practiceBrainGame: BrainGameMode?
+    @State private var lastPracticeSummary: String?
 
     // Google Integration State
     @State private var googleClientIDInput: String = ""
@@ -38,7 +48,110 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // 1. Direct Google Calendar & Google Tasks Integration (OAuth 2.0 + PKCE)
+                // 1. Wake-Up QR / Barcode Registration (Restored)
+                Section {
+                    HStack {
+                        Label("Target QR / Barcode", systemImage: "qrcode.viewfinder")
+                        Spacer()
+                        Text(isWakeQRRegistered ? "Registered ✅" : "Not Set")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(isWakeQRRegistered ? Color.green : Color.secondary)
+                    }
+
+                    if isWakeQRRegistered {
+                        HStack {
+                            Text("Saved Payload")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Text(wakeQRTruncated)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(SolarTheme.solarGold)
+                        }
+                    }
+
+                    HStack(spacing: 10) {
+                        Button {
+                            showingQRRegistrationSheet = true
+                        } label: {
+                            Label(
+                                isWakeQRRegistered ? "Re-Scan QR / Barcode" : "Scan & Register QR / Barcode",
+                                systemImage: "camera.viewfinder"
+                            )
+                            .font(.subheadline.weight(.bold))
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(SolarTheme.solarCore)
+
+                        if isWakeQRRegistered {
+                            Button("Clear", role: .destructive) {
+                                WakeQRStorage.clear()
+                                refreshQRState()
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                } header: {
+                    Text("Wake-Up QR / Barcode")
+                } footer: {
+                    Text("Register any physical QR code or product barcode (bathroom mirror, coffee machine, etc.). Daily Random automatically includes QR Scan once registered.")
+                }
+
+                // 2. Test Solar-Orange Wake Screen & Stage-2 Brain Games
+                Section {
+                    Button {
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            alarmEngine.triggerTestWakeAlarm(mission: .random, brainGame: .random)
+                        }
+                    } label: {
+                        Label("Preview Solar-Orange Wake Screen", systemImage: "sun.max.fill")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundStyle(SolarTheme.solarBright)
+                    }
+
+                    Stepper("Default Reflex Threshold: \(defaultReflexThresholdMs) ms", value: $defaultReflexThresholdMs, in: 180...350, step: 10)
+                        .onChange(of: defaultReflexThresholdMs) { _, newValue in
+                            WakeQRStorage.defaultReflexThresholdMs = newValue
+                        }
+
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                        ForEach(BrainGameMode.playableGames) { game in
+                            Button {
+                                practiceBrainGame = game
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: game.iconName)
+                                        .foregroundStyle(SolarTheme.solarBright)
+                                    Text(game.displayName)
+                                        .font(.caption.weight(.bold))
+                                        .foregroundStyle(.white)
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                                .background(SolarTheme.elevated, in: RoundedRectangle(cornerRadius: 10))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 10)
+                                        .stroke(SolarTheme.hairline, lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.vertical, 4)
+
+                    if let lastPracticeSummary {
+                        Text("Last Practice: \(lastPracticeSummary)")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.green)
+                    }
+                } header: {
+                    Text("Test Wake Screen & Brain Games")
+                }
+
+                // 3. Direct Google Calendar & Google Tasks Integration (OAuth 2.0 + PKCE)
                 Section {
                     TextField("Google OAuth iOS Client ID", text: $googleClientIDInput)
                         .font(.caption.monospaced())
@@ -122,11 +235,9 @@ struct SettingsView: View {
                     ))
                 } header: {
                     Text("Google Integration & Calendar Sources")
-                } footer: {
-                    Text("Uses native ASWebAuthenticationSession + OAuth 2.0 PKCE with calendar.readonly and tasks.readonly scopes. Tokens are stored securely in iOS Keychain.")
                 }
 
-                // 2. Gemini 2.5 Flash API Key (Keychain)
+                // 4. Gemini 2.5 Flash API Key (Keychain)
                 Section {
                     HStack(spacing: 8) {
                         Group {
@@ -183,7 +294,7 @@ struct SettingsView: View {
                     Text("Gemini 2.5 Flash AI Vision (Tab 3 Focus)")
                 }
 
-                // 3. 1-Tap SideStore JSON Backup & Restore
+                // 5. 1-Tap SideStore JSON Backup & Restore
                 Section {
                     HStack(spacing: 10) {
                         Button {
@@ -194,7 +305,7 @@ struct SettingsView: View {
                                 .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .tint(.indigo)
+                        .tint(SolarTheme.solarCore)
 
                         Button {
                             prepareFileExport()
@@ -233,11 +344,9 @@ struct SettingsView: View {
                     }
                 } header: {
                     Text("1-Tap JSON Backup (SideStore Protection)")
-                } footer: {
-                    Text("Export alarms, habits, 12-week heatmap history, and scheduled focus tasks to Clipboard or Files before weekly SideStore re-installs.")
                 }
 
-                // 4. Permissions & Diagnostics
+                // 6. Permissions & Installed Version
                 Section("Permissions & System Status") {
                     statusRow(
                         title: "Guided Access",
@@ -252,7 +361,7 @@ struct SettingsView: View {
                         color: notificationScheduler.authorizationStatus == .authorized ? .green : .orange
                     )
                     statusRow(
-                        title: "Camera (Squats & Proof)",
+                        title: "Camera (Squats, QR & Proof)",
                         value: cameraAuthStatus == .authorized ? "Authorized" : "Pending",
                         color: cameraAuthStatus == .authorized ? .green : .orange
                     )
@@ -272,16 +381,17 @@ struct SettingsView: View {
                             }
                         }
                     }
-
                     HStack {
                         Text("Installed Version")
                         Spacer()
                         Text(installedVersionDisplay)
                             .font(.caption.monospaced().weight(.bold))
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(SolarTheme.solarBright)
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SolarTheme.obsidian)
             .navigationTitle("Settings & Backup")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -291,6 +401,8 @@ struct SettingsView: View {
                 }
             }
             .onAppear {
+                refreshQRState()
+                defaultReflexThresholdMs = WakeQRStorage.defaultReflexThresholdMs
                 googleClientIDInput = googleAuth.clientID
                 geminiKeyInput = KeychainService.loadGeminiAPIKey()
                 offlineFallbackEnabled = KeychainService.offlineVisionFallbackEnabled
@@ -298,6 +410,26 @@ struct SettingsView: View {
                 motionAuthStatus = CMPedometer.authorizationStatus()
                 motionStatusText = StepCounterManager.authorizationStatusText
                 alarmEngine.refreshGuidedAccessStatus()
+            }
+            .sheet(isPresented: $showingQRRegistrationSheet) {
+                WakeQRRegistrationSheet { scannedPayload in
+                    WakeQRStorage.registeredCode = scannedPayload
+                    refreshQRState()
+                }
+            }
+            .fullScreenCover(item: $practiceBrainGame) { game in
+                BrainGameContainerView(
+                    game: game,
+                    reflexThresholdMs: defaultReflexThresholdMs,
+                    isPracticeMode: true,
+                    onCompleted: { summary in
+                        lastPracticeSummary = summary
+                        practiceBrainGame = nil
+                    },
+                    onCancelPractice: {
+                        practiceBrainGame = nil
+                    }
+                )
             }
             .fileExporter(
                 isPresented: $showingFileExporter,
@@ -329,6 +461,7 @@ struct SettingsView: View {
                     do {
                         let data = try Data(contentsOf: fileURL)
                         let summary = try BackupService.importJSONData(data)
+                        refreshQRState()
                         backupStatusIsError = false
                         backupStatusMessage = summary
                     } catch {
@@ -346,9 +479,14 @@ struct SettingsView: View {
         .environment(\.locale, Locale(identifier: "en_GB"))
     }
 
+    private func refreshQRState() {
+        isWakeQRRegistered = WakeQRStorage.isRegistered
+        wakeQRTruncated = WakeQRStorage.truncatedDisplay
+    }
+
     private var installedVersionDisplay: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "10"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.3.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "12"
         return "v\(short) (Build \(build))"
     }
 
@@ -395,6 +533,7 @@ struct SettingsView: View {
         }
         do {
             let summary = try BackupService.importJSONData(data)
+            refreshQRState()
             backupStatusIsError = false
             backupStatusMessage = summary
         } catch {

@@ -151,9 +151,12 @@ struct ArmMorningAlarmIntent: AppIntent {
                 isEnabled: true,
                 repeatDays: [2, 3, 4, 5, 6],
                 tone: .nuclearSiren,
-                missionType: .squats,
-                repGoal: 20,
-                stepGoal: 50
+                missionType: .random,
+                repGoal: 15,
+                stepGoal: 500,
+                stepsTimeLimitSeconds: 600,
+                qrGraceSeconds: 60,
+                brainGameMode: .random
             )
             SharedModelContainer.shared.mainContext.insert(newAlarm)
             targetAlarm = newAlarm

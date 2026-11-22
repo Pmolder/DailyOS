@@ -6,10 +6,10 @@ import UIKit
 import Combine
 
 /// Unified audio, haptics, and real-time hardware volume escalation engine.
-/// Drives 4 exact hardware volume profiles via `SystemVolumeController` while keeping
-/// `AVAudioPlayer.volume = 1.0` so hardware volume controls the real acoustic output:
+/// Keeps `SystemVolumeController` and `CHHapticEngine` strictly lazy (never instantiated at app launch)
+/// and scales `AVAudioPlayer.volume` logarithmically alongside the hardware `UISlider` across all profiles:
 /// 1. Wake Alarm: 0-30s vibration only (0%), 30-60s hardware 1%->15%, 60-90s hardware 15%->50% hold.
-/// 2. Wake Challenge Inactivity Penalty: hardware 1%->50% over 15s.
+/// 2. Wake Challenge Stateful Penalty: 1%->50% over 15s, supporting stateful resume from `savedRampProgress` (0.0...1.0).
 /// 3. Focus Task Check-In Alarm (Normal): hardware 1%->22% over 120s (never >22%).
 /// 4. Focus Task Check-In Alarm (Evasion Penalty): hardware 0%->22% over 10s (never >22%).
 @MainActor
@@ -26,6 +26,11 @@ final class AlarmAudioManager: ObservableObject {
     @Published private(set) var wakeElapsedSeconds: TimeInterval = 0
     @Published private(set) var currentTargetVolumeFraction: Float = 0.0
     @Published private(set) var escalationPhaseLabel: String = "STANDBY"
+
+    /// Mission-scoped progress (0.0...1.0) along the 15-second 1% -> 50% challenge penalty ramp.
+    /// Persists across missed rep windows until the full wake sequence is completed.
+    @Published private(set) var savedRampProgress: Double = 0.0
+    @Published private(set) var livePenaltyRampProgress: Double = 0.0
 
     // Focus Task Check-In Alarm telemetry
     @Published private(set) var isFocusWarningActive: Bool = false
@@ -59,11 +64,12 @@ final class AlarmAudioManager: ObservableObject {
     private var wakePhaseIndex: Int = 0
     private var activeWakeTone: AlarmTone = .nuclearSiren
 
+    private var penaltyBaseProgress: Double = 0.0
+    private var penaltyResumeDate: Date?
+
     private var focusMonitorTimer: Timer?
     private var focusHapticTimer: Timer?
     private var focusStartDate: Date?
-    private var focusTargetDuration: TimeInterval = 120.0
-    private var focusStartVolume: Float = 0.01
 
     private var previewStopWorkItem: DispatchWorkItem?
 
@@ -78,7 +84,7 @@ final class AlarmAudioManager: ObservableObject {
         UIApplication.shared.isIdleTimerDisabled = disabled
     }
 
-    // MARK: - CoreHaptics
+    // MARK: - CoreHaptics (Strictly Lazy)
 
     private func prepareHapticEngine() {
         guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else { return }
@@ -180,6 +186,10 @@ final class AlarmAudioManager: ObservableObject {
         isPenaltyBlastActive = false
         wakeElapsedSeconds = 0
         wakePhaseIndex = 0
+        savedRampProgress = 0.0
+        livePenaltyRampProgress = 0.0
+        penaltyBaseProgress = 0.0
+        penaltyResumeDate = nil
         currentTargetVolumeFraction = 0.0
         escalationPhaseLabel = "PHASE 1 • VIBRATION ONLY (0:00–0:30)"
         wakeStartDate = Date()
@@ -189,7 +199,6 @@ final class AlarmAudioManager: ObservableObject {
         volumeController.stopVolumeControl()
         stopWakeAudioOnly()
 
-        // Keep audio session alive silently during 0-30s vibration-only phase
         startSilentKeepAliveForVibrationPhase()
         startWakeHapticLoop()
 
@@ -231,10 +240,16 @@ final class AlarmAudioManager: ObservableObject {
         }
 
         if isPenaltyBlastActive {
-            currentTargetVolumeFraction = volumeController.targetHardwareVolume
-            let progress = min(1.0, max(0.0, currentTargetVolumeFraction / 0.50))
-            applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: progress, maxGain: 1.0))
-            escalationPhaseLabel = "INACTIVITY PENALTY • RAMPING 1% → 50% (15s)"
+            if let resumeDate = penaltyResumeDate {
+                let elapsed = Date().timeIntervalSince(resumeDate)
+                let progress = min(1.0, max(0.0, penaltyBaseProgress + (elapsed / 15.0)))
+                livePenaltyRampProgress = progress
+                savedRampProgress = progress
+                let targetVol = Float(0.01 + progress * 0.49)
+                currentTargetVolumeFraction = targetVol
+                applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: Float(progress), maxGain: 1.0))
+                escalationPhaseLabel = "PENALTY RAMP • \(Int(round(targetVol * 100)))% (\(Int(round(progress * 100)))%)"
+            }
             return
         }
 
@@ -243,16 +258,17 @@ final class AlarmAudioManager: ObservableObject {
         wakeElapsedSeconds = elapsed
 
         if elapsed < 30.0 {
-            // 0s – 30s: Vibration only, 0% audible alarm
             currentTargetVolumeFraction = 0.0
             escalationPhaseLabel = "PHASE 1 • VIBRATION ONLY (0:00–0:30)"
         } else if elapsed < 60.0 {
-            // 30s – 60s: Hardware volume 1% (0.01) -> 15% (0.15) + logarithmic player gain
             if wakePhaseIndex < 1 {
                 wakePhaseIndex = 1
                 silentPlayer?.stop()
                 activateOverridePlaybackSession()
-                startWakeAudioSource(tone: activeWakeTone, initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.02, maxGain: 1.0))
+                startWakeAudioSource(
+                    tone: activeWakeTone,
+                    initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.02, maxGain: 1.0)
+                )
                 volumeController.startRamp(from: 0.01, to: 0.15, duration: 30.0)
             }
             currentTargetVolumeFraction = volumeController.targetHardwareVolume
@@ -260,13 +276,15 @@ final class AlarmAudioManager: ObservableObject {
             applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: progress, maxGain: 1.0))
             escalationPhaseLabel = "PHASE 2 • HARDWARE RAMP 1% → 15%"
         } else if elapsed < 90.0 {
-            // 60s – 90s: Hardware volume 15% (0.15) -> 50% (0.50) + logarithmic player gain
             if wakePhaseIndex < 2 {
                 wakePhaseIndex = 2
                 if wakeFilePlayer == nil && synthAudioEngine == nil {
                     silentPlayer?.stop()
                     activateOverridePlaybackSession()
-                    startWakeAudioSource(tone: activeWakeTone, initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.30, maxGain: 1.0))
+                    startWakeAudioSource(
+                        tone: activeWakeTone,
+                        initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.30, maxGain: 1.0)
+                    )
                 }
                 volumeController.startRamp(from: 0.15, to: 0.50, duration: 30.0)
             }
@@ -275,7 +293,6 @@ final class AlarmAudioManager: ObservableObject {
             applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: progress, maxGain: 1.0))
             escalationPhaseLabel = "PHASE 3 • HARDWARE RAMP 15% → 50%"
         } else {
-            // 90s+: Hold hardware volume at 50% (0.50) & full player gain with volume-button correction
             if wakePhaseIndex < 3 {
                 wakePhaseIndex = 3
                 volumeController.setLockedTargetVolume(0.50)
@@ -286,14 +303,21 @@ final class AlarmAudioManager: ObservableObject {
         }
     }
 
-    // MARK: - PROFILE 2: Wake Challenge Silence & 15s Inactivity Penalty (1% -> 50%)
+    // MARK: - PROFILE 2: Stateful Challenge Silence & Resume-From-Last-Volume Escalation
 
-    /// Immediately silences the alarm and releases volume lock when "Do Challenge" is tapped
-    /// or immediately when a squat is completed after inactivity.
-    func silenceWakeForChallenge() {
-        guard isWakeSirenActive else { return }
+    /// Silences the alarm while preserving `savedRampProgress` if a penalty ramp was running.
+    @discardableResult
+    func pauseChallengePenaltyAndSaveProgress() -> Double {
+        if isPenaltyBlastActive, let resumeDate = penaltyResumeDate {
+            let elapsed = Date().timeIntervalSince(resumeDate)
+            let progress = min(1.0, max(0.0, penaltyBaseProgress + (elapsed / 15.0)))
+            savedRampProgress = progress
+            livePenaltyRampProgress = progress
+        }
+
         isSirenSilencedForChallenge = true
         isPenaltyBlastActive = false
+        penaltyResumeDate = nil
         currentTargetVolumeFraction = 0.0
         escalationPhaseLabel = "CHALLENGE ACTIVE • ALARM SILENCED"
 
@@ -302,26 +326,62 @@ final class AlarmAudioManager: ObservableObject {
         volumeController.stopVolumeControl()
         wakeHapticTimer?.invalidate()
         wakeHapticTimer = nil
+
+        return savedRampProgress
     }
 
-    /// Immediately resumes alarm sound and smoothly ramps hardware system volume + logarithmic player gain
-    /// from 1% (0.01) to 50% (0.50) over 15 seconds with active hardware volume-button correction.
-    func startWakeInactivityPenalty() {
-        guard isWakeSirenActive else { return }
+    /// Starts or resumes the 15-second `1% -> 50%` alarm ramp starting cleanly from `fromProgress` (0.0...1.0).
+    func startOrResumeChallengePenaltyRamp(fromProgress: Double? = nil) {
+        let base = max(0.0, min(1.0, fromProgress ?? savedRampProgress))
+        savedRampProgress = base
+        livePenaltyRampProgress = base
+        penaltyBaseProgress = base
+        penaltyResumeDate = Date()
+
+        isWakeSirenActive = true
         isSirenSilencedForChallenge = false
         isPenaltyBlastActive = true
-        escalationPhaseLabel = "INACTIVITY PENALTY • RAMPING 1% → 50% (15s)"
+
+        let startHardwareVol = Float(0.01 + base * 0.49)
+        let remainingDuration = max(0.25, (1.0 - base) * 15.0)
+        currentTargetVolumeFraction = startHardwareVol
+        escalationPhaseLabel = "PENALTY RAMP • \(Int(round(startHardwareVol * 100)))% → 50%"
 
         silentPlayer?.stop()
         activateOverridePlaybackSession()
-        let initialGain = SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.02, maxGain: 1.0)
+        let initialGain = SystemVolumeController.logarithmicPlayerGain(normalizedProgress: Float(max(0.02, base)), maxGain: 1.0)
         startWakeAudioSource(tone: activeWakeTone, initialGain: initialGain)
-        volumeController.startRamp(from: 0.01, to: 0.50, duration: 15.0)
-        currentTargetVolumeFraction = volumeController.targetHardwareVolume
+        volumeController.startRamp(from: startHardwareVol, to: 0.50, duration: remainingDuration)
         startWakeHapticLoop()
+
+        if wakeScheduleTimer == nil {
+            let timer = Timer(timeInterval: 0.15, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.tickWakeEscalation()
+                }
+            }
+            RunLoop.main.add(timer, forMode: .common)
+            wakeScheduleTimer = timer
+        }
     }
 
-    /// Stops the wake alarm completely, plays completion chime + "Good morning", unlocks idle timer.
+    /// Convenience wrapper for legacy call sites (fresh 1% -> 50% ramp).
+    func silenceWakeForChallenge() {
+        _ = pauseChallengePenaltyAndSaveProgress()
+    }
+
+    func startWakeInactivityPenalty() {
+        startOrResumeChallengePenaltyRamp(fromProgress: savedRampProgress)
+    }
+
+    func resetSavedRampProgress() {
+        savedRampProgress = 0.0
+        livePenaltyRampProgress = 0.0
+        penaltyBaseProgress = 0.0
+        penaltyResumeDate = nil
+    }
+
+    /// Permanently stops all wake audio & haptics, resets saved penalty progress, plays chime + "Good morning".
     func completeWakeMissionAndCelebrate() {
         stopWakeAudioOnly()
         silentPlayer?.stop()
@@ -338,7 +398,8 @@ final class AlarmAudioManager: ObservableObject {
         wakeElapsedSeconds = 0
         wakePhaseIndex = 0
         currentTargetVolumeFraction = 0.0
-        escalationPhaseLabel = "CHALLENGE COMPLETE"
+        resetSavedRampProgress()
+        escalationPhaseLabel = "WAKE COMPLETE"
 
         setIdleTimerDisabled(false)
         playGoodMorningChimeAndSpeech()
@@ -427,9 +488,7 @@ final class AlarmAudioManager: ObservableObject {
         isUsingSynthFallback = false
     }
 
-    // MARK: - PROFILES 3 & 4: Focus / Task Check-In Alarm
-    // Normal: 1% (0.01) -> 22% (0.22) over 120s
-    // Evasion Penalty: 0% (0.00) -> 22% (0.22) over 10s
+    // MARK: - PROFILES 3 & 4: Focus / Task Check-In Alarm (Max 22%)
 
     func startFocusTaskAlarm(evasionPenalty: Bool) {
         guard !isWakeSirenActive else { return }
@@ -445,14 +504,14 @@ final class AlarmAudioManager: ObservableObject {
 
         let startVol: Float = evasionPenalty ? 0.00 : 0.01
         let duration: TimeInterval = evasionPenalty ? 10.0 : 120.0
-        focusStartVolume = startVol
-        focusTargetDuration = duration
         focusWarningVolumeFraction = startVol
 
         setIdleTimerDisabled(true)
         activateOverridePlaybackSession()
         let initialProgress = startVol / 0.22
-        startFocusAudioPlayer(initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: initialProgress, maxGain: 0.75))
+        startFocusAudioPlayer(
+            initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: initialProgress, maxGain: 0.75)
+        )
         volumeController.startRamp(from: startVol, to: 0.22, duration: duration)
         startFocusWarningTimers()
     }

@@ -26,8 +26,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patrik.dailyos
         PRODUCT_NAME: DailyOS
-        MARKETING_VERSION: "3.1.0"
-        CURRENT_PROJECT_VERSION: "10"
+        MARKETING_VERSION: "3.3.0"
+        CURRENT_PROJECT_VERSION: "12"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: DailyOS/Info.plist
         CODE_SIGN_IDENTITY: ""
@@ -56,7 +56,7 @@ targets:
           - UIInterfaceOrientationPortrait
         UIBackgroundModes:
           - audio
-        NSCameraUsageDescription: "DailyOS requires camera access for on-device AI squat wake missions and live photo proof during scheduled focus check-ins."
+        NSCameraUsageDescription: "DailyOS requires camera access for on-device AI squat wake missions, QR/barcode wake scanning, and live photo proof during scheduled focus check-ins."
         NSCalendarsFullAccessUsageDescription: "DailyOS optionally reads your iOS calendars to schedule focus accountability check-ins for your events."
         NSCalendarsUsageDescription: "DailyOS optionally reads your calendar events to run focus accountability blocks."
         NSMotionUsageDescription: "DailyOS uses CoreMotion pedometer sensors to count your live steps during the Steps wake mission."

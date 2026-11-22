@@ -1,6 +1,55 @@
 import Foundation
 import SwiftData
 
+// MARK: - Wake-Up QR / Barcode Storage (UserDefaults)
+
+enum WakeQRStorage {
+    private static let codeKey = "com.patrik.dailyos.wakeQRCode"
+    private static let lastPhysicalKey = "com.patrik.dailyos.lastRandomPhysicalMission"
+    private static let lastBrainKey = "com.patrik.dailyos.lastRandomBrainGame"
+    private static let defaultReflexKey = "com.patrik.dailyos.defaultReflexThresholdMs"
+
+    static var registeredCode: String {
+        get { UserDefaults.standard.string(forKey: codeKey) ?? "" }
+        set { UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: codeKey) }
+    }
+
+    static var isRegistered: Bool {
+        !registeredCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static var truncatedDisplay: String {
+        let code = registeredCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !code.isEmpty else { return "Not Set" }
+        if code.count <= 18 { return code }
+        return "\(code.prefix(10))…\(code.suffix(6))"
+    }
+
+    static func clear() {
+        UserDefaults.standard.removeObject(forKey: codeKey)
+    }
+
+    static var lastRandomPhysicalMissionRaw: String {
+        get { UserDefaults.standard.string(forKey: lastPhysicalKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: lastPhysicalKey) }
+    }
+
+    static var lastRandomBrainGameRaw: String {
+        get { UserDefaults.standard.string(forKey: lastBrainKey) ?? "" }
+        set { UserDefaults.standard.set(newValue, forKey: lastBrainKey) }
+    }
+
+    static var defaultReflexThresholdMs: Int {
+        get {
+            let stored = UserDefaults.standard.integer(forKey: defaultReflexKey)
+            return (180...350).contains(stored) ? stored : 260
+        }
+        set {
+            UserDefaults.standard.set(max(180, min(350, newValue)), forKey: defaultReflexKey)
+        }
+    }
+}
+
 // MARK: - Alarm Tone
 
 enum AlarmTone: String, CaseIterable, Codable, Identifiable {
@@ -69,37 +118,132 @@ enum AlarmTone: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-// MARK: - Wake Dismissal Mission Types (Squats + Steps Only)
+// MARK: - Stage-1 Physical Wake Mission Types
 
 enum MissionType: String, CaseIterable, Codable, Identifiable {
+    case random = "random"
     case squats = "squats"
     case steps = "steps"
+    case qrBarcode = "qr_barcode"
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
-        case .squats: return "AI Camera Squats (Vision)"
-        case .steps: return "Steps (CoreMotion Pedometer)"
+        case .random: return "Daily Random"
+        case .squats: return "Squats (Vision)"
+        case .steps: return "Steps (CoreMotion)"
+        case .qrBarcode: return "QR / Barcode Scan"
         }
     }
 
     var shortBadge: String {
         switch self {
+        case .random: return "Random"
         case .squats: return "Squats"
         case .steps: return "Steps"
+        case .qrBarcode: return "QR Scan"
         }
     }
 
     var iconName: String {
         switch self {
+        case .random: return "dice.fill"
         case .squats: return "figure.strengthtraining.functional"
         case .steps: return "figure.walk"
+        case .qrBarcode: return "qrcode.viewfinder"
+        }
+    }
+
+    /// Resolves `.random` into a concrete Stage-1 mission, excluding QR Scan if none is registered
+    /// and avoiding repeating the previous morning's random roll whenever possible.
+    func resolvedForTrigger() -> MissionType {
+        guard self == .random else { return self }
+
+        var pool: [MissionType] = [.squats, .steps]
+        if WakeQRStorage.isRegistered {
+            pool.append(.qrBarcode)
+        }
+
+        let previousRaw = WakeQRStorage.lastRandomPhysicalMissionRaw
+        let nonRepeating = pool.filter { $0.rawValue != previousRaw }
+        let candidates = nonRepeating.isEmpty ? pool : nonRepeating
+        let chosen = candidates.randomElement() ?? .squats
+        WakeQRStorage.lastRandomPhysicalMissionRaw = chosen.rawValue
+        return chosen
+    }
+}
+
+// MARK: - Stage-2 Cognitive Brain Game Modes
+
+enum BrainGameMode: String, CaseIterable, Codable, Identifiable {
+    case random = "random"
+    case reflexStrike = "reflex_strike"
+    case memoryGrid = "memory_grid"
+    case mathSprint = "math_sprint"
+    case nodeConnect = "node_connect"
+    case off = "off"
+
+    var id: String { rawValue }
+
+    static var playableGames: [BrainGameMode] {
+        [.reflexStrike, .memoryGrid, .mathSprint, .nodeConnect]
+    }
+
+    var displayName: String {
+        switch self {
+        case .random: return "Daily Random"
+        case .reflexStrike: return "Reflex Strike"
+        case .memoryGrid: return "Memory Grid"
+        case .mathSprint: return "Math Sprint"
+        case .nodeConnect: return "Node Connect"
+        case .off: return "Off"
+        }
+    }
+
+    var shortBadge: String {
+        switch self {
+        case .random: return "Random Brain"
+        case .reflexStrike: return "Reflex"
+        case .memoryGrid: return "Memory"
+        case .mathSprint: return "Math"
+        case .nodeConnect: return "Nodes"
+        case .off: return "No Brain Game"
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .random: return "brain.head.profile"
+        case .reflexStrike: return "bolt.fill"
+        case .memoryGrid: return "square.grid.3x3.fill"
+        case .mathSprint: return "function"
+        case .nodeConnect: return "point.3.connected.trianglepath.dotted"
+        case .off: return "minus.circle"
+        }
+    }
+
+    /// Resolves `.random` into one of the 4 playable cognitive games (avoiding back-to-back repeats),
+    /// or returns `nil` when `.off`.
+    func resolvedForTrigger() -> BrainGameMode? {
+        switch self {
+        case .off:
+            return nil
+        case .reflexStrike, .memoryGrid, .mathSprint, .nodeConnect:
+            return self
+        case .random:
+            let pool = Self.playableGames
+            let previousRaw = WakeQRStorage.lastRandomBrainGameRaw
+            let nonRepeating = pool.filter { $0.rawValue != previousRaw }
+            let candidates = nonRepeating.isEmpty ? pool : nonRepeating
+            let chosen = candidates.randomElement() ?? .reflexStrike
+            WakeQRStorage.lastRandomBrainGameRaw = chosen.rawValue
+            return chosen
         }
     }
 }
 
-// MARK: - SwiftData Alarm Model
+// MARK: - SwiftData Alarm Model (Safe Defaults for Lightweight Migration)
 
 @Model
 final class AlarmItem {
@@ -111,8 +255,12 @@ final class AlarmItem {
     var repeatDaysRaw: String
     var toneRaw: String
     var missionTypeRaw: String
-    var repGoal: Int = 20
-    var stepGoal: Int = 50
+    var repGoal: Int = 15
+    var stepGoal: Int = 500
+    var stepsTimeLimitSeconds: Int = 600
+    var qrGraceSeconds: Int = 60
+    var brainGameModeRaw: String = BrainGameMode.random.rawValue
+    var reflexThresholdMs: Int = 260
     var createdAt: Date
     var lastTriggeredMinuteKey: String
 
@@ -124,9 +272,13 @@ final class AlarmItem {
         isEnabled: Bool = true,
         repeatDays: Set<Int> = [2, 3, 4, 5, 6],
         tone: AlarmTone = .nuclearSiren,
-        missionType: MissionType = .squats,
-        repGoal: Int = 20,
-        stepGoal: Int = 50,
+        missionType: MissionType = .random,
+        repGoal: Int = 15,
+        stepGoal: Int = 500,
+        stepsTimeLimitSeconds: Int = 600,
+        qrGraceSeconds: Int = 60,
+        brainGameMode: BrainGameMode = .random,
+        reflexThresholdMs: Int = WakeQRStorage.defaultReflexThresholdMs,
         createdAt: Date = Date(),
         lastTriggeredMinuteKey: String = ""
     ) {
@@ -139,7 +291,11 @@ final class AlarmItem {
         self.toneRaw = tone.rawValue
         self.missionTypeRaw = missionType.rawValue
         self.repGoal = max(5, repGoal)
-        self.stepGoal = max(10, stepGoal)
+        self.stepGoal = max(50, min(5000, stepGoal))
+        self.stepsTimeLimitSeconds = max(30, min(3600, stepsTimeLimitSeconds))
+        self.qrGraceSeconds = max(20, min(180, qrGraceSeconds))
+        self.brainGameModeRaw = brainGameMode.rawValue
+        self.reflexThresholdMs = max(180, min(350, reflexThresholdMs))
         self.createdAt = createdAt
         self.lastTriggeredMinuteKey = lastTriggeredMinuteKey
     }
@@ -164,8 +320,13 @@ final class AlarmItem {
     }
 
     var missionType: MissionType {
-        get { MissionType(rawValue: missionTypeRaw) ?? .squats }
+        get { MissionType(rawValue: missionTypeRaw) ?? .random }
         set { missionTypeRaw = newValue.rawValue }
+    }
+
+    var brainGameMode: BrainGameMode {
+        get { BrainGameMode(rawValue: brainGameModeRaw) ?? .random }
+        set { brainGameModeRaw = newValue.rawValue }
     }
 
     var displayLabel: String {
@@ -181,12 +342,24 @@ final class AlarmItem {
         Weekday.formatSummary(for: repeatDays)
     }
 
+    var formattedStepsTimeLimit: String {
+        let mins = stepsTimeLimitSeconds / 60
+        let secs = stepsTimeLimitSeconds % 60
+        if mins == 0 { return "\(secs)s" }
+        if secs == 0 { return "\(mins)m" }
+        return "\(mins)m \(secs)s"
+    }
+
     var missionSummary: String {
         switch missionType {
+        case .random:
+            return "Daily Random"
         case .squats:
             return "\(repGoal) Squats"
         case .steps:
-            return "\(stepGoal) Steps"
+            return "\(stepGoal) Steps • \(formattedStepsTimeLimit)"
+        case .qrBarcode:
+            return "QR Scan • \(qrGraceSeconds)s"
         }
     }
 

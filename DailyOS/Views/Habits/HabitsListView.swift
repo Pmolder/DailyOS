@@ -155,6 +155,8 @@ struct HabitsListView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SolarTheme.obsidian)
             .listStyle(.insetGrouped)
             .navigationTitle("Habits")
             .toolbar {

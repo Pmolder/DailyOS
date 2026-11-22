@@ -245,6 +245,8 @@ struct FocusTabView: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SolarTheme.obsidian)
             .listStyle(.insetGrouped)
             .navigationTitle("Focus")
             .toolbar {

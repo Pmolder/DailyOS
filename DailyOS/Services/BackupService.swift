@@ -38,13 +38,15 @@ enum BackupService {
         let checkInLogs = store.fetchFocusCheckInLogs()
 
         let payload = DailyOSBackupPayload(
-            schemaVersion: 3,
+            schemaVersion: 4,
             exportedAt: Date(),
             trackedAppleCalendarIDs: FocusAccountabilityManager.shared.trackedAppleCalendarIDs.sorted(),
             appleCalendarSyncEnabled: FocusAccountabilityManager.shared.appleCalendarSyncEnabled,
             googleCalendarSyncEnabled: GoogleAuthService.shared.syncGoogleCalendarEnabled,
             googleTasksSyncEnabled: GoogleAuthService.shared.syncGoogleTasksEnabled,
             offlineVisionFallbackEnabled: KeychainService.offlineVisionFallbackEnabled,
+            registeredWakeQRCode: WakeQRStorage.registeredCode,
+            defaultReflexThresholdMs: WakeQRStorage.defaultReflexThresholdMs,
             alarms: alarms.map {
                 AlarmBackupDTO(
                     id: $0.id,
@@ -57,6 +59,10 @@ enum BackupService {
                     missionTypeRaw: $0.missionTypeRaw,
                     repGoal: $0.repGoal,
                     stepGoal: $0.stepGoal,
+                    stepsTimeLimitSeconds: $0.stepsTimeLimitSeconds,
+                    qrGraceSeconds: $0.qrGraceSeconds,
+                    brainGameModeRaw: $0.brainGameModeRaw,
+                    reflexThresholdMs: $0.reflexThresholdMs,
                     createdAt: $0.createdAt
                 )
             },
@@ -141,9 +147,13 @@ enum BackupService {
                 isEnabled: dto.isEnabled,
                 repeatDays: [],
                 tone: AlarmTone(rawValue: dto.toneRaw) ?? .nuclearSiren,
-                missionType: MissionType(rawValue: dto.missionTypeRaw) ?? .squats,
+                missionType: MissionType(rawValue: dto.missionTypeRaw) ?? .random,
                 repGoal: dto.repGoal,
                 stepGoal: dto.stepGoal,
+                stepsTimeLimitSeconds: dto.stepsTimeLimitSeconds ?? 600,
+                qrGraceSeconds: dto.qrGraceSeconds ?? 60,
+                brainGameMode: BrainGameMode(rawValue: dto.brainGameModeRaw ?? "") ?? .random,
+                reflexThresholdMs: dto.reflexThresholdMs ?? 260,
                 createdAt: dto.createdAt
             )
             item.repeatDaysRaw = dto.repeatDaysRaw
@@ -194,6 +204,13 @@ enum BackupService {
                 wasOfflineFallback: dto.wasOfflineFallback
             )
             context.insert(log)
+        }
+
+        if let qr = payload.registeredWakeQRCode {
+            WakeQRStorage.registeredCode = qr
+        }
+        if let reflexMs = payload.defaultReflexThresholdMs {
+            WakeQRStorage.defaultReflexThresholdMs = reflexMs
         }
 
         KeychainService.offlineVisionFallbackEnabled = payload.offlineVisionFallbackEnabled

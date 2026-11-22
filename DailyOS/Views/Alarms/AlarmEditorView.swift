@@ -11,9 +11,26 @@ struct AlarmEditorView: View {
     @State private var label: String = ""
     @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6]
     @State private var selectedTone: AlarmTone = .nuclearSiren
-    @State private var selectedMission: MissionType = .squats
-    @State private var repGoal: Int = 20
-    @State private var stepGoal: Int = 50
+
+    // Stage-1 Physical Mission (defaults to Daily Random)
+    @State private var selectedMission: MissionType = .random
+    @State private var repGoal: Int = 15
+    @State private var stepGoal: Int = 500
+    @State private var customStepsText: String = "500"
+    @State private var stepsLimitMinutes: Int = 10
+    @State private var stepsLimitExtraSeconds: Int = 0
+    @State private var qrGraceSeconds: Int = 60
+
+    // Stage-2 Cognitive Brain Game (defaults to Daily Random)
+    @State private var selectedBrainGame: BrainGameMode = .random
+    @State private var reflexThresholdMs: Int = WakeQRStorage.defaultReflexThresholdMs
+
+    private let stepPresets: [Int] = [200, 500, 1000, 2000]
+    private let timeLimitMinutePresets: [Int] = [2, 5, 10, 15, 20]
+
+    private var totalStepsLimitSeconds: Int {
+        max(30, min(3600, (stepsLimitMinutes * 60) + stepsLimitExtraSeconds))
+    }
 
     var body: some View {
         NavigationStack {
@@ -41,7 +58,7 @@ struct AlarmEditorView: View {
                             Spacer()
                             Text(Weekday.formatSummary(for: repeatDays))
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(SolarTheme.solarBright)
                         }
 
                         HStack(spacing: 6) {
@@ -59,7 +76,7 @@ struct AlarmEditorView: View {
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 8)
                                         .background(
-                                            isSelected ? Color.orange : Color.secondary.opacity(0.18),
+                                            isSelected ? SolarTheme.solarCore : Color.secondary.opacity(0.18),
                                             in: RoundedRectangle(cornerRadius: 8)
                                         )
                                         .foregroundStyle(isSelected ? Color.black : Color.primary)
@@ -83,39 +100,168 @@ struct AlarmEditorView: View {
                         AlarmEngine.shared.previewAlarmTone(selectedTone)
                     } label: {
                         Label("Preview Siren (2.5s)", systemImage: "speaker.wave.3.fill")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(SolarTheme.solarBright)
                     }
-
-                    Text("Hardware escalation: 0–30s vibration only → 30–60s ramp 1%–15% → 60–90s ramp 15%–50% with volume-button correction.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 }
 
-                // Wake Mission Selection (Squats + Steps Only)
-                Section("Wake Challenge Mission") {
-                    Picker("Mission", selection: $selectedMission) {
+                // Stage-1 Physical Challenge Configuration
+                Section {
+                    Picker("Stage-1 Physical Mission", selection: $selectedMission) {
                         ForEach(MissionType.allCases) { mission in
                             Label(mission.displayName, systemImage: mission.iconName)
                                 .tag(mission)
                         }
                     }
-                    .pickerStyle(.segmented)
 
-                    switch selectedMission {
-                    case .squats:
-                        Stepper("Target Squats: \(repGoal) reps", value: $repGoal, in: 5...60, step: 5)
-                        Text("On-device Apple Vision front-camera pose tracking. 20s initial grace for Rep 1, then 3.0s per rep.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
-                    case .steps:
-                        Stepper("Target Steps: \(stepGoal) steps", value: $stepGoal, in: 20...200, step: 10)
-                        Text("Live CoreMotion CMPedometer step tracking. Flat 20s window from tapping DO CHALLENGE before ramping 1%→50% (15s).")
+                    if selectedMission == .random {
+                        Text("Rolls daily among Squats, Steps\(WakeQRStorage.isRegistered ? ", and QR Scan" : " (register a QR in Settings to include QR Scan)") without repeating yesterday's mission. Configure each pool mission's targets below.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
+
+                    // Squats Settings (shown for .squats and .random)
+                    if selectedMission == .squats || selectedMission == .random {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Stepper("Squats Target: \(repGoal) reps", value: $repGoal, in: 5...60, step: 5)
+                            Text("30s initial grace for Rep 1 → 5s per rep thereafter with stateful resume-volume penalty.")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // Steps Settings (shown for .steps and .random)
+                    if selectedMission == .steps || selectedMission == .random {
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack {
+                                Text("Steps Target")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                TextField("500", text: $customStepsText)
+                                    .keyboardType(.numberPad)
+                                    .multilineTextAlignment(.trailing)
+                                    .font(.subheadline.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(SolarTheme.solarBright)
+                                    .frame(width: 72)
+                                    .onChange(of: customStepsText) { _, newValue in
+                                        if let parsed = Int(newValue) {
+                                            stepGoal = max(50, min(5000, parsed))
+                                        }
+                                    }
+                                Text("steps")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            HStack(spacing: 6) {
+                                ForEach(stepPresets, id: \.self) { preset in
+                                    let active = stepGoal == preset
+                                    Button {
+                                        stepGoal = preset
+                                        customStepsText = "\(preset)"
+                                    } label: {
+                                        Text("\(preset)")
+                                            .font(.caption2.weight(.bold).monospacedDigit())
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 6)
+                                            .background(
+                                                active ? SolarTheme.solarCore : Color.white.opacity(0.08),
+                                                in: RoundedRectangle(cornerRadius: 8)
+                                            )
+                                            .foregroundStyle(active ? Color.black : Color.white)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            Stepper("Adjust Steps (±50)", value: Binding(
+                                get: { stepGoal },
+                                set: { newVal in
+                                    stepGoal = max(50, min(5000, newVal))
+                                    customStepsText = "\(stepGoal)"
+                                }
+                            ), in: 50...5000, step: 50)
+
+                            Divider()
+
+                            HStack {
+                                Text("Steps Time Limit")
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                Text(formattedLimitLabel)
+                                    .font(.subheadline.monospacedDigit().weight(.bold))
+                                    .foregroundStyle(SolarTheme.solarGold)
+                            }
+
+                            HStack(spacing: 6) {
+                                ForEach(timeLimitMinutePresets, id: \.self) { mins in
+                                    let active = stepsLimitMinutes == mins && stepsLimitExtraSeconds == 0
+                                    Button {
+                                        stepsLimitMinutes = mins
+                                        stepsLimitExtraSeconds = 0
+                                    } label: {
+                                        Text("\(mins)m")
+                                            .font(.caption2.weight(.bold).monospacedDigit())
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 6)
+                                            .background(
+                                                active ? SolarTheme.solarCore : Color.white.opacity(0.08),
+                                                in: RoundedRectangle(cornerRadius: 8)
+                                            )
+                                            .foregroundStyle(active ? Color.black : Color.white)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            Stepper("Minutes: \(stepsLimitMinutes) min", value: $stepsLimitMinutes, in: 0...60, step: 1)
+                            Stepper("Seconds: \(stepsLimitExtraSeconds) sec", value: $stepsLimitExtraSeconds, in: 0...55, step: 5)
+                        }
+                        .padding(.vertical, 4)
+                    }
+
+                    // QR / Barcode Settings (shown for .qrBarcode and .random)
+                    if selectedMission == .qrBarcode || selectedMission == .random {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Stepper("QR Walk Grace: \(qrGraceSeconds)s", value: $qrGraceSeconds, in: 20...180, step: 10)
+                            HStack {
+                                Text("Wake QR Code Status")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                                Text(WakeQRStorage.isRegistered ? "Registered ✅" : "Not Set (Settings)")
+                                    .font(.caption.weight(.bold))
+                                    .foregroundStyle(WakeQRStorage.isRegistered ? Color.green : Color.orange)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Stage 1 • Physical Mission")
+                }
+
+                // Stage-2 Cognitive Brain Game Configuration
+                Section {
+                    Picker("Stage-2 Brain Game", selection: $selectedBrainGame) {
+                        ForEach(BrainGameMode.allCases) { mode in
+                            Label(mode.displayName, systemImage: mode.iconName)
+                                .tag(mode)
+                        }
+                    }
+
+                    if selectedBrainGame == .random || selectedBrainGame == .reflexStrike {
+                        Stepper("Reflex Strike Threshold: \(reflexThresholdMs) ms", value: $reflexThresholdMs, in: 180...350, step: 10)
+                    }
+
+                    if selectedBrainGame == .random {
+                        Text("Rotates daily across Reflex Strike, Memory Grid, Math Sprint, and Node Connect without repeating yesterday's game.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Stage 2 • Brain Activation Game")
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SolarTheme.obsidian)
             .navigationTitle(alarmToEdit == nil ? "New Wake Alarm" : "Edit Wake Alarm")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -139,6 +285,16 @@ struct AlarmEditorView: View {
                 AlarmEngine.shared.stopPreview()
             }
         }
+        .preferredColorScheme(.dark)
+        .environment(\.calendar, ISOWeekCalendar.current)
+        .environment(\.locale, Locale(identifier: "en_GB"))
+    }
+
+    private var formattedLimitLabel: String {
+        let secs = totalStepsLimitSeconds
+        let m = secs / 60
+        let s = secs % 60
+        return String(format: "%02d:%02d", m, s)
     }
 
     private func loadInitialValues() {
@@ -153,13 +309,29 @@ struct AlarmEditorView: View {
             selectedTone = alarm.tone
             selectedMission = alarm.missionType
             repGoal = max(5, alarm.repGoal)
-            stepGoal = max(20, alarm.stepGoal)
+            stepGoal = max(50, min(5000, alarm.stepGoal))
+            customStepsText = "\(stepGoal)"
+            let limit = max(30, min(3600, alarm.stepsTimeLimitSeconds))
+            stepsLimitMinutes = limit / 60
+            stepsLimitExtraSeconds = limit % 60
+            qrGraceSeconds = max(20, min(180, alarm.qrGraceSeconds))
+            selectedBrainGame = alarm.brainGameMode
+            reflexThresholdMs = max(180, min(350, alarm.reflexThresholdMs))
         } else {
             var comps = calendar.dateComponents([.year, .month, .day], from: Date())
             comps.hour = 7
             comps.minute = 0
             selectedTime = calendar.date(from: comps) ?? Date()
             label = ""
+            selectedMission = .random
+            selectedBrainGame = .random
+            repGoal = 15
+            stepGoal = 500
+            customStepsText = "500"
+            stepsLimitMinutes = 10
+            stepsLimitExtraSeconds = 0
+            qrGraceSeconds = 60
+            reflexThresholdMs = WakeQRStorage.defaultReflexThresholdMs
         }
     }
 
@@ -168,6 +340,8 @@ struct AlarmEditorView: View {
         let hour = comps.hour ?? 7
         let minute = comps.minute ?? 0
         let cleanLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let clampedSteps = max(50, min(5000, stepGoal))
+        let clampedTimeLimit = totalStepsLimitSeconds
 
         if let alarm = alarmToEdit {
             alarm.label = cleanLabel
@@ -177,7 +351,11 @@ struct AlarmEditorView: View {
             alarm.tone = selectedTone
             alarm.missionType = selectedMission
             alarm.repGoal = repGoal
-            alarm.stepGoal = stepGoal
+            alarm.stepGoal = clampedSteps
+            alarm.stepsTimeLimitSeconds = clampedTimeLimit
+            alarm.qrGraceSeconds = qrGraceSeconds
+            alarm.brainGameMode = selectedBrainGame
+            alarm.reflexThresholdMs = reflexThresholdMs
             alarm.lastTriggeredMinuteKey = ""
             alarm.isEnabled = true
         } else {
@@ -190,7 +368,11 @@ struct AlarmEditorView: View {
                 tone: selectedTone,
                 missionType: selectedMission,
                 repGoal: repGoal,
-                stepGoal: stepGoal
+                stepGoal: clampedSteps,
+                stepsTimeLimitSeconds: clampedTimeLimit,
+                qrGraceSeconds: qrGraceSeconds,
+                brainGameMode: selectedBrainGame,
+                reflexThresholdMs: reflexThresholdMs
             )
             modelContext.insert(newAlarm)
         }

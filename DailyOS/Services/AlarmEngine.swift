@@ -3,7 +3,7 @@ import UIKit
 import Combine
 import SwiftData
 
-/// Coordinates Wake alarms, Guided Access monitoring, clock ticking (ISO-8601), and `AlarmAudioManager`.
+/// Coordinates Wake alarms, Daily Randomization, Guided Access monitoring, clock ticking, and `AlarmAudioManager`.
 @MainActor
 final class AlarmEngine: ObservableObject {
     static let shared = AlarmEngine()
@@ -136,7 +136,7 @@ final class AlarmEngine: ObservableObject {
         }
     }
 
-    // MARK: - Trigger, Challenge Controls & Completion
+    // MARK: - Trigger, Stateful Penalty Controls & Completion
 
     func triggerAlarm(_ alarm: AlarmItem) {
         activeRingingAlarm = alarm
@@ -145,30 +145,61 @@ final class AlarmEngine: ObservableObject {
         audioManager.startWakeEscalation(tone: alarm.tone)
     }
 
-    func silenceForChallenge() {
-        audioManager.silenceWakeForChallenge()
+    /// Launches a temporary non-persisted alarm to preview the Solar-Orange Wake UI & missions from Settings.
+    func triggerTestWakeAlarm(
+        mission: MissionType = .random,
+        brainGame: BrainGameMode = .random
+    ) {
+        let nowComps = ISOWeekCalendar.current.dateComponents([.hour, .minute], from: Date())
+        let previewAlarm = AlarmItem(
+            label: "Wake Preview",
+            hour: nowComps.hour ?? 7,
+            minute: nowComps.minute ?? 0,
+            isEnabled: false,
+            repeatDays: [],
+            tone: .nuclearSiren,
+            missionType: mission,
+            repGoal: 5,
+            stepGoal: 50,
+            stepsTimeLimitSeconds: 120,
+            qrGraceSeconds: 45,
+            brainGameMode: brainGame,
+            reflexThresholdMs: WakeQRStorage.defaultReflexThresholdMs
+        )
+        triggerAlarm(previewAlarm)
     }
 
-    func startInactivityPenalty() {
-        audioManager.startWakeInactivityPenalty()
+    @discardableResult
+    func silenceForChallenge() -> Double {
+        audioManager.pauseChallengePenaltyAndSaveProgress()
     }
 
-    func dismissActiveAlarm() {
+    func startOrResumeInactivityPenalty() {
+        audioManager.startOrResumeChallengePenaltyRamp()
+    }
+
+    /// Permanently stops all alarms & cancels fallback notifications upon winning Stage-1 + Stage-2
+    /// while keeping the "WAKE COMPLETE" summary card visible until the user taps "START MY DAY".
+    func finalizeWakeAudioAndNotifications() {
         if let current = activeRingingAlarm {
             NotificationScheduler.shared.cancelAlarmBurstNotifications(for: current.id)
-            if current.repeatDays.isEmpty {
+            if current.repeatDays.isEmpty && current.isEnabled {
                 current.isEnabled = false
                 SharedModelContainer.shared.save()
             }
         }
-
-        activeRingingAlarm = nil
-        isAlarmRinging = false
         audioManager.completeWakeMissionAndCelebrate()
-
         Task {
             await NotificationScheduler.shared.rescheduleAll()
         }
+    }
+
+    func dismissActiveAlarm() {
+        if audioManager.isWakeSirenActive {
+            finalizeWakeAudioAndNotifications()
+        }
+        activeRingingAlarm = nil
+        isAlarmRinging = false
     }
 
     // MARK: - Preview Forwarding

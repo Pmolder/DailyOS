@@ -29,35 +29,34 @@ struct AlarmsListView: View {
                         .listRowBackground(Color.clear)
                 }
 
-                // 2. Overnight Hardware Volume Engine Status Card
+                // 2. Solar-Orange Overnight Engine Status Card
                 Section {
                     VStack(alignment: .leading, spacing: 10) {
                         HStack(spacing: 12) {
                             Image(systemName: audioManager.isSilentKeepAliveRunning
-                                  ? "waveform.badge.checkmark"
+                                  ? "sun.max.fill"
                                   : "moon.zzz.fill")
                                 .font(.title2)
-                                .foregroundStyle(audioManager.isSilentKeepAliveRunning ? Color.green : Color.secondary)
+                                .foregroundStyle(audioManager.isSilentKeepAliveRunning ? SolarTheme.solarBright : Color.secondary)
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(audioManager.isSilentKeepAliveRunning
-                                     ? "Wake Engine Armed"
-                                     : "Wake Engine Standby")
+                                     ? "Solar Wake Engine Armed"
+                                     : "Solar Wake Engine Standby")
                                     .font(.subheadline.weight(.bold))
 
                                 Text(audioManager.isSilentKeepAliveRunning
-                                     ? "Silent .playback keep-alive active • Screen auto-lock disabled"
-                                     : "Add and enable an alarm to arm overnight audio & idle lock")
+                                     ? "Silent keep-alive active • Max brightness wake ready"
+                                     : "Enable an alarm to arm overnight audio & idle lock")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             Spacer()
                         }
 
-                        // Exact Hardware Volume Curve Legend
                         HStack(spacing: 6) {
                             curveBadge("0–30s", "Vib Only 0%", .cyan)
-                            curveBadge("30–60s", "HW 1→15%", .orange)
+                            curveBadge("30–60s", "HW 1→15%", SolarTheme.solarBright)
                             curveBadge("60–90s", "HW 15→50%", .red)
                         }
 
@@ -69,7 +68,7 @@ struct AlarmsListView: View {
                                     systemImage: "bell.and.waves.left.and.right"
                                 )
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(.orange)
+                                .foregroundStyle(SolarTheme.solarBright)
 
                                 Spacer()
 
@@ -80,16 +79,18 @@ struct AlarmsListView: View {
                         }
                     }
                     .padding(.vertical, 6)
+                    .listRowBackground(SolarTheme.charcoal)
                 }
 
-                // 3. Alarms List (100% Empty on First Launch)
+                // 3. Wake Alarms List (100% Empty on First Launch)
                 Section("Wake Alarms") {
                     if alarms.isEmpty {
                         ContentUnavailableView(
                             "No Wake Alarms",
                             systemImage: "alarm.waves.left.and.right",
-                            description: Text("Tap + to create a wake alarm with Squats or Steps challenge dismissal.")
+                            description: Text("Tap + to create a Solar-Orange alarm with Daily Random physical & brain challenges.")
                         )
+                        .listRowBackground(SolarTheme.charcoal)
                     } else {
                         ForEach(alarms) { alarm in
                             AlarmRowView(
@@ -109,6 +110,7 @@ struct AlarmsListView: View {
                                     alarmEngine.triggerAlarm(alarm)
                                 }
                             )
+                            .listRowBackground(SolarTheme.charcoal)
                             .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                                 Button(role: .destructive) {
                                     deleteAlarm(alarm)
@@ -120,14 +122,16 @@ struct AlarmsListView: View {
                                 Button {
                                     alarmEngine.triggerAlarm(alarm)
                                 } label: {
-                                    Label("Test Wake", systemImage: "flame.fill")
+                                    Label("Test Wake", systemImage: "sun.max.fill")
                                 }
-                                .tint(.red)
+                                .tint(SolarTheme.solarCore)
                             }
                         }
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SolarTheme.obsidian)
             .listStyle(.insetGrouped)
             .navigationTitle("Wake")
             .toolbar {
@@ -169,7 +173,7 @@ struct AlarmsListView: View {
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
         .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -204,7 +208,7 @@ private struct GuidedAccessBannerView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
         .background(
-            (isLocked ? Color.green : Color.red).opacity(0.16),
+            (isLocked ? Color.green : Color.red).opacity(0.15),
             in: RoundedRectangle(cornerRadius: 14)
         )
         .overlay(
@@ -214,7 +218,7 @@ private struct GuidedAccessBannerView: View {
     }
 }
 
-// MARK: - Alarm Row
+// MARK: - Obsidian & Solar-Orange Alarm Card Row
 
 private struct AlarmRowView: View {
     let alarm: AlarmItem
@@ -225,34 +229,40 @@ private struct AlarmRowView: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             Button(action: onTapEdit) {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 7) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text(alarm.formattedTime)
-                            .font(.system(size: 38, weight: .bold, design: .rounded))
+                            .font(.system(size: 38, weight: .black, design: .rounded))
                             .monospacedDigit()
                             .foregroundStyle(alarm.isEnabled ? Color.white : Color.secondary)
 
                         Text(alarm.displayLabel)
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.9) : Color.secondary)
+                            .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.88) : Color.secondary)
                             .lineLimit(1)
                     }
 
-                    HStack(spacing: 8) {
-                        Text(alarm.repeatSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    Text(alarm.repeatSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
-                        Text("•")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-
+                    // Stage-1 Physical + Stage-2 Brain Pill Badges
+                    HStack(spacing: 6) {
                         Label(alarm.missionSummary, systemImage: alarm.missionType.iconName)
-                            .font(.caption.weight(.bold))
+                            .font(.caption2.weight(.bold))
                             .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Color.orange.opacity(0.18), in: Capsule())
-                            .foregroundStyle(.orange)
+                            .padding(.vertical, 4)
+                            .background(SolarTheme.solarCore.opacity(0.18), in: Capsule())
+                            .foregroundStyle(SolarTheme.solarBright)
+
+                        if alarm.brainGameMode != .off {
+                            Label(alarm.brainGameMode.shortBadge, systemImage: alarm.brainGameMode.iconName)
+                                .font(.caption2.weight(.bold))
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.white.opacity(0.08), in: Capsule())
+                                .foregroundStyle(.white.opacity(0.85))
+                        }
                     }
                 }
             }
@@ -268,12 +278,12 @@ private struct AlarmRowView: View {
                 )
             )
             .labelsHidden()
-            .tint(.orange)
+            .tint(SolarTheme.solarCore)
         }
         .padding(.vertical, 4)
         .contextMenu {
             Button(action: onTestRing) {
-                Label("Test Alarm & Challenge Now", systemImage: "flame.fill")
+                Label("Test Solar Wake & Challenges", systemImage: "sun.max.fill")
             }
             Button(action: onTapEdit) {
                 Label("Edit Alarm", systemImage: "pencil")

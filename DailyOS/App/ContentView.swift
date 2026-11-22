@@ -30,7 +30,7 @@ struct ContentView: View {
                 }
                 .tag(2)
         }
-        .tint(.orange)
+        .tint(SolarTheme.solarCore)
         .preferredColorScheme(.dark)
         .environment(\.calendar, ISOWeekCalendar.current)
         .environment(\.locale, Locale(identifier: "en_GB"))

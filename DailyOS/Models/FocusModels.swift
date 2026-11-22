@@ -30,7 +30,7 @@ enum FocusBlockSource: String, Codable, CaseIterable, Identifiable {
     }
 }
 
-// MARK: - SwiftData Local Scheduled Focus Task Model (Supports Any Future Date & Time)
+// MARK: - SwiftData Local Scheduled Focus Task Model
 
 @Model
 final class ManualFocusBlock {
@@ -112,7 +112,6 @@ struct FocusBlockDisplayItem: Identifiable, Equatable {
         max(1.0, endDate.timeIntervalSince(startDate) / 60.0)
     }
 
-    /// Tasks longer than 35 minutes require recurring 30-minute check-ins after the initial 5-minute proof.
     var requiresRecurringCheckIns: Bool {
         durationMinutes > 35.0
     }
@@ -141,13 +140,15 @@ struct FocusBlockDisplayItem: Identifiable, Equatable {
 // MARK: - JSON Backup DTOs (SideStore Weekly Re-Install Protection)
 
 struct DailyOSBackupPayload: Codable {
-    var schemaVersion: Int = 3
+    var schemaVersion: Int = 4
     var exportedAt: Date = Date()
     var trackedAppleCalendarIDs: [String]
     var appleCalendarSyncEnabled: Bool
     var googleCalendarSyncEnabled: Bool
     var googleTasksSyncEnabled: Bool
     var offlineVisionFallbackEnabled: Bool
+    var registeredWakeQRCode: String?
+    var defaultReflexThresholdMs: Int?
     var alarms: [AlarmBackupDTO]
     var habits: [HabitBackupDTO]
     var manualFocusBlocks: [ManualFocusBlockDTO]
@@ -165,6 +166,10 @@ struct AlarmBackupDTO: Codable {
     var missionTypeRaw: String
     var repGoal: Int
     var stepGoal: Int
+    var stepsTimeLimitSeconds: Int?
+    var qrGraceSeconds: Int?
+    var brainGameModeRaw: String?
+    var reflexThresholdMs: Int?
     var createdAt: Date
 }
 

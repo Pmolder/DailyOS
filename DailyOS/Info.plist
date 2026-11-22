@@ -27,7 +27,7 @@
 	<key>NSCalendarsUsageDescription</key>
 	<string>DailyOS optionally reads your calendar events to run focus accountability blocks.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>DailyOS requires camera access for on-device AI squat wake missions and live photo proof during scheduled focus check-ins.</string>
+	<string>DailyOS requires camera access for on-device AI squat wake missions, QR/barcode wake scanning, and live photo proof during scheduled focus check-ins.</string>
 	<key>NSMotionUsageDescription</key>
 	<string>DailyOS uses CoreMotion pedometer sensors to count your live steps during the Steps wake mission.</string>
 	<key>UIApplicationSceneManifest</key>
