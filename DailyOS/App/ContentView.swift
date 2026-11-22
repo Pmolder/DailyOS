@@ -58,7 +58,6 @@ struct ContentView: View {
             FocusTaskAlarmFullScreenView()
         }
         .task {
-            SystemVolumeController.shared.ensureMountedInKeyWindow()
             _ = await notificationScheduler.requestAuthorizationIfNeeded()
             alarmEngine.syncWithAlarms()
             focusManager.handleAppReopenCheck()
@@ -66,7 +65,9 @@ struct ContentView: View {
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
-                SystemVolumeController.shared.ensureMountedInKeyWindow()
+                DispatchQueue.main.async {
+                    SystemVolumeController.shared.ensureMountedInKeyWindow()
+                }
                 alarmEngine.refreshGuidedAccessStatus()
                 alarmEngine.syncWithAlarms()
                 focusManager.handleAppReopenCheck()

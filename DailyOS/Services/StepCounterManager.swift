@@ -10,17 +10,15 @@ final class StepCounterManager: ObservableObject {
     @Published private(set) var isTracking: Bool = false
     @Published private(set) var statusMessage: String = "Ready to track steps"
 
-    /// Fires whenever live step count increases (feeds the 20s initial / 3s inter-step challenge timer).
     var onStepIncremented: ((Int) -> Void)?
 
-    private let pedometer = CMPedometer()
-    private let motionManager = CMMotionManager()
+    // Strictly lazy so CoreMotion is never instantiated at app launch or before UIWindowScene is active.
+    private lazy var pedometer = CMPedometer()
+    private lazy var motionManager = CMMotionManager()
     private var sessionStartDate: Date?
     private var lastStepPeakTimestamp: TimeInterval = 0
 
-    init() {
-        isHardwareAvailable = CMPedometer.isStepCountingAvailable()
-    }
+    init() {}
 
     static var authorizationStatusText: String {
         switch CMPedometer.authorizationStatus() {
@@ -32,11 +30,12 @@ final class StepCounterManager: ObservableObject {
         }
     }
 
-    /// Prompts CoreMotion authorization cleanly via a lightweight pedometer query.
-    func requestPermissionIfNeeded() {
+    /// Prompts CoreMotion authorization lazily only when explicitly requested by user action.
+    static func requestMotionPermission() {
         guard CMPedometer.isStepCountingAvailable() else { return }
+        let tempPedometer = CMPedometer()
         let now = Date()
-        pedometer.queryPedometerData(from: now.addingTimeInterval(-60), to: now) { _, _ in }
+        tempPedometer.queryPedometerData(from: now.addingTimeInterval(-60), to: now) { _, _ in }
     }
 
     func startTracking() {
@@ -103,6 +102,7 @@ final class StepCounterManager: ObservableObject {
     }
 
     func stopTracking() {
+        guard isTracking else { return }
         isTracking = false
         pedometer.stopUpdates()
         if motionManager.isAccelerometerActive {

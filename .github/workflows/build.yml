@@ -71,8 +71,11 @@ jobs:
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/DailyOS.app Payload/
 
-          echo "=== Verifying Info.plist Version ==="
-          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier"
+          echo "=== Verifying Info.plist Version & Privacy Keys ==="
+          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSMotionUsageDescription|NSCameraUsageDescription|NSCalendarsFullAccessUsageDescription"
+          plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSMotionUsageDescription"
+          plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCameraUsageDescription"
+          plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCalendarsFullAccessUsageDescription"
 
           echo "=== Verifying New v3 Symbols in Mach-O Binary (UTF-8 & UTF-16LE) ==="
           python3 - <<'EOF'

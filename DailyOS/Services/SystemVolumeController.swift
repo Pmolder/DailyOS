@@ -4,15 +4,15 @@ import AVFoundation
 import UIKit
 import Combine
 
-/// Dedicated hardware system volume controller using an offscreen, non-hidden `MPVolumeView`
-/// (`alpha = 0.001`) mounted directly inside the active key `UIWindow`.
-/// Drives real-time hardware volume ramps (updating the iOS Control Center volume bar) and
-/// prevents lowering volume via hardware Volume Down buttons using `AVAudioSession.outputVolume` KVO.
+/// Dedicated hardware system volume controller using a lazily mounted `MPVolumeView`
+/// inside visible key `UIWindow` bounds (`alpha = 0.011`, never hidden, `isUserInteractionEnabled = false`).
+/// Strictly lazy: performs ZERO MediaPlayer / UIWindow / AVAudioSession KVO work in `init()` so
+/// app startup before `UIWindowScene` activation can never crash.
 @MainActor
 final class SystemVolumeController: ObservableObject {
     static let shared = SystemVolumeController()
 
-    @Published private(set) var currentHardwareVolume: Float = AVAudioSession.sharedInstance().outputVolume
+    @Published private(set) var currentHardwareVolume: Float = 0.0
     @Published private(set) var targetHardwareVolume: Float = 0.0
     @Published private(set) var isVolumeLockActive: Bool = false
 
@@ -27,18 +27,20 @@ final class SystemVolumeController: ObservableObject {
     private var rampDuration: TimeInterval = 30.0
     private var maxAllowedCap: Float = 0.50
 
-    private init() {
-        setupOutputVolumeKVO()
-        ensureMountedInKeyWindow()
-    }
+    // Intentionally empty: MPVolumeView & KVO are lazily initialized ONLY after UIWindowScene is active.
+    private init() {}
 
     // MARK: - Window Mounting & Internal UISlider Extraction
 
-    /// Ensures `MPVolumeView` is mounted inside the visible key `UIWindow` bounds (`alpha = 0.011`,
-    /// never hidden, `isUserInteractionEnabled = false`) and immediately laid out so iOS 17–26
-    /// instantiates and honors programmatic updates to its internal `UISlider`.
+    /// Lazily mounts `MPVolumeView` inside the active foreground key `UIWindow` bounds
+    /// (`alpha = 0.011`, `isUserInteractionEnabled = false`, `layoutIfNeeded()`) and attaches KVO.
+    /// Safely no-ops if no foreground active `UIWindowScene` / key window exists yet.
     func ensureMountedInKeyWindow() {
-        let activeWindow = resolveKeyWindow()
+        guard let window = resolveActiveForegroundKeyWindow() else { return }
+
+        if outputVolumeObservation == nil {
+            setupOutputVolumeKVO()
+        }
 
         if volumeView == nil {
             let mpView = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 100, height: 40))
@@ -49,7 +51,7 @@ final class SystemVolumeController: ObservableObject {
             volumeView = mpView
         }
 
-        guard let mpView = volumeView, let window = activeWindow else { return }
+        guard let mpView = volumeView else { return }
 
         if mpView.superview !== window {
             mpView.removeFromSuperview()
@@ -59,6 +61,7 @@ final class SystemVolumeController: ObservableObject {
         }
         mpView.setNeedsLayout()
         mpView.layoutIfNeeded()
+        currentHardwareVolume = AVAudioSession.sharedInstance().outputVolume
     }
 
     /// Computes a smooth perceptual logarithmic gain (`AVAudioPlayer.volume`) for a normalized
@@ -67,22 +70,17 @@ final class SystemVolumeController: ObservableObject {
     static func logarithmicPlayerGain(normalizedProgress: Float, maxGain: Float = 1.0) -> Float {
         let clamped = max(0.0, min(1.0, normalizedProgress))
         guard clamped > 0.0001 else { return 0.0 }
-        // Perceptual dB curve across -32 dB .. 0 dB mapped cleanly into (0.025 ... maxGain)
         let db = -32.0 * (1.0 - Double(clamped))
         let perceptual = Float(pow(10.0, db / 20.0))
         return max(0.025, min(maxGain, perceptual * maxGain))
     }
 
-    private func resolveKeyWindow() -> UIWindow? {
-        let scenes = UIApplication.shared.connectedScenes
+    private func resolveActiveForegroundKeyWindow() -> UIWindow? {
+        let activeScenes = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .sorted { lhs, rhs in
-                let lhsActive = lhs.activationState == .foregroundActive
-                let rhsActive = rhs.activationState == .foregroundActive
-                return lhsActive && !rhsActive
-            }
+            .filter { $0.activationState == .foregroundActive }
 
-        for scene in scenes {
+        for scene in activeScenes {
             if let key = scene.windows.first(where: { $0.isKeyWindow }) {
                 return key
             }
@@ -116,8 +114,6 @@ final class SystemVolumeController: ObservableObject {
 
     // MARK: - Real-Time Hardware Volume Ramp & Lock
 
-    /// Smoothly ramps the hardware system volume from `from` to `to` over `duration` seconds,
-    /// ticking every 0.15s and actively snapping back if the user presses Volume Down.
     func startRamp(from startVol: Float, to endVol: Float, duration: TimeInterval) {
         ensureMountedInKeyWindow()
         rampTimer?.invalidate()
@@ -144,7 +140,6 @@ final class SystemVolumeController: ObservableObject {
         rampTimer = timer
     }
 
-    /// Immediately sets and locks a specific target hardware volume (useful for multi-phase escalations).
     func setLockedTargetVolume(_ target: Float) {
         ensureMountedInKeyWindow()
         let clamped = max(0.0, min(1.0, target))
@@ -153,7 +148,6 @@ final class SystemVolumeController: ObservableObject {
         applyHardwareVolume(clamped)
     }
 
-    /// Stops ramping and releases the hardware volume-button lock.
     func stopVolumeControl() {
         rampTimer?.invalidate()
         rampTimer = nil
@@ -187,14 +181,13 @@ final class SystemVolumeController: ObservableObject {
 
     private func setupOutputVolumeKVO() {
         let session = AVAudioSession.sharedInstance()
+        currentHardwareVolume = session.outputVolume
         outputVolumeObservation = session.observe(\.outputVolume, options: [.new]) { [weak self] _, change in
             let observed = change.newValue ?? AVAudioSession.sharedInstance().outputVolume
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 self.currentHardwareVolume = observed
 
-                // If an alarm or escalation is active and user pressed Volume Down / dragged Control Center down,
-                // immediately snap the hardware slider right back up to the current expected target.
                 if self.isVolumeLockActive && observed < (self.targetHardwareVolume - 0.015) {
                     self.applyHardwareVolume(self.targetHardwareVolume)
                 }

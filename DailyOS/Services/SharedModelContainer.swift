@@ -2,12 +2,14 @@ import Foundation
 import SwiftData
 
 /// Local-only SwiftData container (`cloudKitDatabase: .none`).
-/// Fresh installs open 100% clean with 0 alarms, 0 habits, 0 focus blocks/tasks, and 0 pre-filled data.
+/// Uses an explicit versioned store URL (`DailyOS_v3.sqlite`) with automatic stale-store
+/// deletion + retry and a guaranteed in-memory fallback so schema changes NEVER fatalError() on launch.
 @MainActor
 final class SharedModelContainer {
     static let shared = SharedModelContainer()
 
     let container: ModelContainer
+    let isUsingInMemoryFallback: Bool
 
     private init() {
         let schema = Schema([
@@ -16,28 +18,72 @@ final class SharedModelContainer {
             ManualFocusBlock.self,
             FocusCheckInLog.self
         ])
-        let configuration = ModelConfiguration(
-            "DailyOSLocalStoreV3",
+
+        let storeURL = Self.persistentStoreURL()
+        let persistentConfig = ModelConfiguration(
             schema: schema,
-            isStoredInMemoryOnly: false,
+            url: storeURL,
             allowsSave: true,
             cloudKitDatabase: .none
         )
 
-        do {
-            self.container = try ModelContainer(for: schema, configurations: [configuration])
-        } catch {
-            let recoveryConfig = ModelConfiguration(
-                "DailyOSLocalStoreV3Recovery",
-                schema: schema,
-                isStoredInMemoryOnly: false,
-                allowsSave: true,
-                cloudKitDatabase: .none
-            )
-            do {
-                self.container = try ModelContainer(for: schema, configurations: [recoveryConfig])
-            } catch {
-                fatalError("Failed to initialize local SwiftData ModelContainer: \(error.localizedDescription)")
+        // Attempt 1: Open persistent v3 SQLite store
+        if let opened = try? ModelContainer(for: schema, configurations: [persistentConfig]) {
+            self.container = opened
+            self.isUsingInMemoryFallback = false
+            return
+        }
+
+        // Attempt 2: Delete stale/corrupted SQLite files (including -wal / -shm) and retry
+        Self.removeStoreFiles(at: storeURL)
+        if let recovered = try? ModelContainer(for: schema, configurations: [persistentConfig]) {
+            self.container = recovered
+            self.isUsingInMemoryFallback = false
+            return
+        }
+
+        // Attempt 3: Guaranteed safe in-memory fallback (never fatalError on launch)
+        let inMemoryConfig = ModelConfiguration(
+            schema: schema,
+            isStoredInMemoryOnly: true,
+            allowsSave: true,
+            cloudKitDatabase: .none
+        )
+        if let memContainer = try? ModelContainer(for: schema, configurations: [inMemoryConfig]) {
+            self.container = memContainer
+            self.isUsingInMemoryFallback = true
+            return
+        }
+
+        // Final safeguard with default in-memory schema
+        let fallbackSchema = Schema([AlarmItem.self, HabitItem.self, ManualFocusBlock.self, FocusCheckInLog.self])
+        self.container = try! ModelContainer(
+            for: fallbackSchema,
+            configurations: [ModelConfiguration(isStoredInMemoryOnly: true)]
+        )
+        self.isUsingInMemoryFallback = true
+    }
+
+    private static func persistentStoreURL() -> URL {
+        let fm = FileManager.default
+        let baseDir = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+            ?? fm.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        if !fm.fileExists(atPath: baseDir.path) {
+            try? fm.createDirectory(at: baseDir, withIntermediateDirectories: true)
+        }
+        return baseDir.appendingPathComponent("DailyOS_v3.sqlite")
+    }
+
+    private static func removeStoreFiles(at storeURL: URL) {
+        let fm = FileManager.default
+        let candidates = [
+            storeURL,
+            URL(fileURLWithPath: storeURL.path + "-wal"),
+            URL(fileURLWithPath: storeURL.path + "-shm")
+        ]
+        for file in candidates {
+            if fm.fileExists(atPath: file.path) {
+                try? fm.removeItem(at: file)
             }
         }
     }

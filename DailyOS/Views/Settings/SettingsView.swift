@@ -30,9 +30,10 @@ struct SettingsView: View {
     @State private var showingFileImporter: Bool = false
     @State private var exportDocument = DailyOSBackupDocument()
 
-    // Permissions
-    @State private var cameraAuthStatus: AVAuthorizationStatus = AVCaptureDevice.authorizationStatus(for: .video)
-    private let stepPermissionHelper = StepCounterManager()
+    // Permissions (populated lazily in .onAppear so no hardware APIs run at init time)
+    @State private var cameraAuthStatus: AVAuthorizationStatus = .notDetermined
+    @State private var motionStatusText: String = "Not Requested"
+    @State private var motionAuthStatus: CMAuthorizationStatus = .notDetermined
 
     var body: some View {
         NavigationStack {
@@ -258,13 +259,17 @@ struct SettingsView: View {
                     HStack {
                         Text("Motion & Fitness (Steps)")
                         Spacer()
-                        Text(StepCounterManager.authorizationStatusText)
+                        Text(motionStatusText)
                             .font(.caption.weight(.bold))
-                            .foregroundStyle(CMPedometer.authorizationStatus() == .authorized ? Color.green : Color.orange)
+                            .foregroundStyle(motionAuthStatus == .authorized ? Color.green : Color.orange)
                     }
-                    if CMPedometer.authorizationStatus() == .notDetermined {
+                    if motionAuthStatus == .notDetermined {
                         Button("Request Motion & Fitness Permission") {
-                            stepPermissionHelper.requestPermissionIfNeeded()
+                            StepCounterManager.requestMotionPermission()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                                motionAuthStatus = CMPedometer.authorizationStatus()
+                                motionStatusText = StepCounterManager.authorizationStatusText
+                            }
                         }
                     }
 
@@ -290,6 +295,8 @@ struct SettingsView: View {
                 geminiKeyInput = KeychainService.loadGeminiAPIKey()
                 offlineFallbackEnabled = KeychainService.offlineVisionFallbackEnabled
                 cameraAuthStatus = AVCaptureDevice.authorizationStatus(for: .video)
+                motionAuthStatus = CMPedometer.authorizationStatus()
+                motionStatusText = StepCounterManager.authorizationStatusText
                 alarmEngine.refreshGuidedAccessStatus()
             }
             .fileExporter(

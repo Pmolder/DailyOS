@@ -12,7 +12,6 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         UNUserNotificationCenter.current().delegate = self
 
         Task { @MainActor in
-            SystemVolumeController.shared.ensureMountedInKeyWindow()
             NotificationScheduler.shared.registerNotificationCategories()
             AlarmEngine.shared.syncWithAlarms()
             FocusAccountabilityManager.shared.handleAppReopenCheck()

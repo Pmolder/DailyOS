@@ -36,7 +36,7 @@ final class FocusAccountabilityManager: ObservableObject {
     private static let evasionPenaltyActiveKey = "com.patrik.dailyos.evasionPenaltyActive"
 
     // Calendar & Sync State
-    @Published private(set) var appleCalendarAuthStatus: EKAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
+    @Published private(set) var appleCalendarAuthStatus: EKAuthorizationStatus = .notDetermined
     @Published var appleCalendarSyncEnabled: Bool = false
     @Published private(set) var availableAppleCalendars: [CalendarFilterOption] = []
     @Published var trackedAppleCalendarIDs: Set<String> = []
@@ -67,7 +67,7 @@ final class FocusAccountabilityManager: ObservableObject {
     @Published var lastVerificationFeedback: String?
     @Published var lastVerificationWasRejected: Bool = false
 
-    private let eventStore = EKEventStore()
+    private lazy var eventStore = EKEventStore()
     private var cachedGoogleBlocks: [FocusBlockDisplayItem] = []
     private var tickTimer: Timer?
     private var graceTimer: Timer?
@@ -77,8 +77,11 @@ final class FocusAccountabilityManager: ObservableObject {
     private init() {
         loadSavedPreferences()
         startLoopTimer()
-        if appleCalendarSyncEnabled && isAppleCalendarAuthorized {
-            loadAvailableAppleCalendars()
+        if appleCalendarSyncEnabled {
+            appleCalendarAuthStatus = EKEventStore.authorizationStatus(for: .event)
+            if isAppleCalendarAuthorized {
+                loadAvailableAppleCalendars()
+            }
         }
         refreshScheduleLocally()
     }

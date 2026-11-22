@@ -36,7 +36,9 @@ final class AlarmAudioManager: ObservableObject {
 
     // MARK: - Private Audio & Haptic State
 
-    private let volumeController = SystemVolumeController.shared
+    private var volumeController: SystemVolumeController {
+        SystemVolumeController.shared
+    }
 
     private var silentPlayer: AVAudioPlayer?
     private var wakeFilePlayer: AVAudioPlayer?
@@ -67,7 +69,6 @@ final class AlarmAudioManager: ObservableObject {
 
     private init() {
         WavFileSynthesizer.ensureCustomSoundsInstalled()
-        prepareHapticEngine()
         setupAudioSessionObservers()
     }
 
