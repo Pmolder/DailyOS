@@ -13,12 +13,30 @@ on:
 
 jobs:
   build-ipa:
-    name: Build Unsigned iOS IPA (SideStore Compatible)
+    name: Build Unsigned iOS IPA (SideStore / iLoader Compatible)
     runs-on: macos-latest
 
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Compute Build Metadata & List Sources
+        id: meta
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION="3.1.0"
+          BUILD_NUM="${{ github.run_number }}"
+          IPA_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}.ipa"
+          ARTIFACT_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}"
+          echo "short_sha=${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build_num=${BUILD_NUM}" >> "$GITHUB_OUTPUT"
+          echo "ipa_name=${IPA_NAME}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
+          echo "Building commit ${SHORT_SHA} -> ${IPA_NAME}"
+          find DailyOS -name "*.swift" | sort
 
       - name: Install XcodeGen
         run: |
@@ -27,33 +45,57 @@ jobs:
           fi
           xcodegen --version
 
-      - name: Generate Xcode Project
-        run: xcodegen generate
+      - name: Clean & Generate Xcode Project
+        run: |
+          rm -rf build Payload DailyOS.xcodeproj *.ipa
+          xcodegen generate
 
       - name: Build Unsigned Release App
         run: |
-          xcodebuild build \
+          xcodebuild clean build \
             -project DailyOS.xcodeproj \
             -scheme DailyOS \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
+            MARKETING_VERSION="${{ steps.meta.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.meta.outputs.build_num }}" \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGNING_ALLOWED=NO \
             AD_HOC_CODE_SIGNING_ALLOWED=YES
 
-      - name: Package Payload into DailyOS.ipa
+      - name: Package Payload & Verify Compiled Binary
         run: |
-          rm -rf Payload DailyOS.ipa
+          rm -rf Payload *.ipa
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/DailyOS.app Payload/
-          zip -r9 DailyOS.ipa Payload
-          ls -lh DailyOS.ipa
 
-      - name: Upload DailyOS.ipa Artifact
+          echo "=== Verifying Info.plist Version ==="
+          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier"
+
+          echo "=== Verifying New v3 Symbols in Mach-O Binary ==="
+          grep -a -F -q "Connect Google Calendar & Tasks" Payload/DailyOS.app/DailyOS
+          grep -a -F -q "DO CHALLENGE" Payload/DailyOS.app/DailyOS
+          grep -a -F -q "Target Steps" Payload/DailyOS.app/DailyOS
+
+          echo "=== Verifying Old v1/v2 Removed Missions Are Absent ==="
+          if grep -a -F -q "DAILYOS-WAKE-QR" Payload/DailyOS.app/DailyOS; then
+            echo "ERROR: Stale QR string found in binary!"
+            exit 1
+          fi
+          if grep -a -F -q "AI Camera Pushups" Payload/DailyOS.app/DailyOS; then
+            echo "ERROR: Stale Pushups string found in binary!"
+            exit 1
+          fi
+
+          IPA_NAME="${{ steps.meta.outputs.ipa_name }}"
+          zip -r9 "${IPA_NAME}" Payload
+          ls -lh "${IPA_NAME}"
+
+      - name: Upload Versioned IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: DailyOS-Unsigned-IPA
-          path: DailyOS.ipa
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.meta.outputs.ipa_name }}
           retention-days: 30

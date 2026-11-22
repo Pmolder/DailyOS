@@ -267,6 +267,14 @@ struct SettingsView: View {
                             stepPermissionHelper.requestPermissionIfNeeded()
                         }
                     }
+
+                    HStack {
+                        Text("Installed Version")
+                        Spacer()
+                        Text(installedVersionDisplay)
+                            .font(.caption.monospaced().weight(.bold))
+                            .foregroundStyle(.cyan)
+                    }
                 }
             }
             .navigationTitle("Settings & Backup")
@@ -328,6 +336,12 @@ struct SettingsView: View {
         }
         .preferredColorScheme(.dark)
         .environment(\.calendar, ISOWeekCalendar.current)
+    }
+
+    private var installedVersionDisplay: String {
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "10"
+        return "v\(short) (Build \(build))"
     }
 
     private func statusRow(title: String, value: String, color: Color) -> some View {
