@@ -873,6 +873,7 @@ private struct AddScheduledTaskSheet: View {
             }
         }
         .environment(\.calendar, ISOWeekCalendar.current)
+        .environment(\.locale, Locale(identifier: "en_GB"))
     }
 
     private func combine(date: Date, time: Date) -> Date {

@@ -33,6 +33,7 @@ struct ContentView: View {
         .tint(.orange)
         .preferredColorScheme(.dark)
         .environment(\.calendar, ISOWeekCalendar.current)
+        .environment(\.locale, Locale(identifier: "en_GB"))
         .sheet(isPresented: $showingSettingsSheet) {
             SettingsView()
         }

@@ -336,6 +336,7 @@ struct SettingsView: View {
         }
         .preferredColorScheme(.dark)
         .environment(\.calendar, ISOWeekCalendar.current)
+        .environment(\.locale, Locale(identifier: "en_GB"))
     }
 
     private var installedVersionDisplay: String {

@@ -110,7 +110,7 @@ struct AlarmEditorView: View {
 
                     case .steps:
                         Stepper("Target Steps: \(stepGoal) steps", value: $stepGoal, in: 20...200, step: 10)
-                        Text("Live CoreMotion CMPedometer step tracking. 20s initial grace to start stepping, then 3.0s between steps.")
+                        Text("Live CoreMotion CMPedometer step tracking. Flat 20s window from tapping DO CHALLENGE before ramping 1%→50% (15s).")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

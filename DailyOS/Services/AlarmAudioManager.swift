@@ -231,6 +231,8 @@ final class AlarmAudioManager: ObservableObject {
 
         if isPenaltyBlastActive {
             currentTargetVolumeFraction = volumeController.targetHardwareVolume
+            let progress = min(1.0, max(0.0, currentTargetVolumeFraction / 0.50))
+            applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: progress, maxGain: 1.0))
             escalationPhaseLabel = "INACTIVITY PENALTY • RAMPING 1% → 50% (15s)"
             return
         }
@@ -244,36 +246,41 @@ final class AlarmAudioManager: ObservableObject {
             currentTargetVolumeFraction = 0.0
             escalationPhaseLabel = "PHASE 1 • VIBRATION ONLY (0:00–0:30)"
         } else if elapsed < 60.0 {
-            // 30s – 60s: Hardware volume 1% (0.01) -> 15% (0.15)
+            // 30s – 60s: Hardware volume 1% (0.01) -> 15% (0.15) + logarithmic player gain
             if wakePhaseIndex < 1 {
                 wakePhaseIndex = 1
                 silentPlayer?.stop()
                 activateOverridePlaybackSession()
-                startWakeAudioSourceAtFullPlayerGain(tone: activeWakeTone)
+                startWakeAudioSource(tone: activeWakeTone, initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.02, maxGain: 1.0))
                 volumeController.startRamp(from: 0.01, to: 0.15, duration: 30.0)
             }
             currentTargetVolumeFraction = volumeController.targetHardwareVolume
+            let progress = min(1.0, max(0.0, currentTargetVolumeFraction / 0.50))
+            applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: progress, maxGain: 1.0))
             escalationPhaseLabel = "PHASE 2 • HARDWARE RAMP 1% → 15%"
         } else if elapsed < 90.0 {
-            // 60s – 90s: Hardware volume 15% (0.15) -> 50% (0.50)
+            // 60s – 90s: Hardware volume 15% (0.15) -> 50% (0.50) + logarithmic player gain
             if wakePhaseIndex < 2 {
                 wakePhaseIndex = 2
                 if wakeFilePlayer == nil && synthAudioEngine == nil {
                     silentPlayer?.stop()
                     activateOverridePlaybackSession()
-                    startWakeAudioSourceAtFullPlayerGain(tone: activeWakeTone)
+                    startWakeAudioSource(tone: activeWakeTone, initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.30, maxGain: 1.0))
                 }
                 volumeController.startRamp(from: 0.15, to: 0.50, duration: 30.0)
             }
             currentTargetVolumeFraction = volumeController.targetHardwareVolume
+            let progress = min(1.0, max(0.0, currentTargetVolumeFraction / 0.50))
+            applyWakePlayerGain(SystemVolumeController.logarithmicPlayerGain(normalizedProgress: progress, maxGain: 1.0))
             escalationPhaseLabel = "PHASE 3 • HARDWARE RAMP 15% → 50%"
         } else {
-            // 90s+: Hold hardware volume at 50% (0.50) with active volume-button correction
+            // 90s+: Hold hardware volume at 50% (0.50) & full player gain with volume-button correction
             if wakePhaseIndex < 3 {
                 wakePhaseIndex = 3
                 volumeController.setLockedTargetVolume(0.50)
             }
             currentTargetVolumeFraction = 0.50
+            applyWakePlayerGain(1.0)
             escalationPhaseLabel = "HOLDING HARDWARE VOLUME AT 50%"
         }
     }
@@ -281,7 +288,7 @@ final class AlarmAudioManager: ObservableObject {
     // MARK: - PROFILE 2: Wake Challenge Silence & 15s Inactivity Penalty (1% -> 50%)
 
     /// Immediately silences the alarm and releases volume lock when "Do Challenge" is tapped
-    /// or immediately when a squat/step is completed after inactivity.
+    /// or immediately when a squat is completed after inactivity.
     func silenceWakeForChallenge() {
         guard isWakeSirenActive else { return }
         isSirenSilencedForChallenge = true
@@ -296,7 +303,7 @@ final class AlarmAudioManager: ObservableObject {
         wakeHapticTimer = nil
     }
 
-    /// Immediately resumes alarm sound and smoothly ramps hardware system volume
+    /// Immediately resumes alarm sound and smoothly ramps hardware system volume + logarithmic player gain
     /// from 1% (0.01) to 50% (0.50) over 15 seconds with active hardware volume-button correction.
     func startWakeInactivityPenalty() {
         guard isWakeSirenActive else { return }
@@ -306,7 +313,8 @@ final class AlarmAudioManager: ObservableObject {
 
         silentPlayer?.stop()
         activateOverridePlaybackSession()
-        startWakeAudioSourceAtFullPlayerGain(tone: activeWakeTone)
+        let initialGain = SystemVolumeController.logarithmicPlayerGain(normalizedProgress: 0.02, maxGain: 1.0)
+        startWakeAudioSource(tone: activeWakeTone, initialGain: initialGain)
         volumeController.startRamp(from: 0.01, to: 0.50, duration: 15.0)
         currentTargetVolumeFraction = volumeController.targetHardwareVolume
         startWakeHapticLoop()
@@ -373,15 +381,20 @@ final class AlarmAudioManager: ObservableObject {
         wakeHapticTimer = timer
     }
 
-    private func startWakeAudioSourceAtFullPlayerGain(tone: AlarmTone) {
+    private func applyWakePlayerGain(_ gain: Float) {
+        let clamped = max(0.0, min(1.0, gain))
+        wakeFilePlayer?.volume = clamped
+        synthAudioEngine?.mainMixerNode.outputVolume = clamped
+    }
+
+    private func startWakeAudioSource(tone: AlarmTone, initialGain: Float) {
         stopWakeAudioOnly()
 
         if let fileName = tone.bundledFileName,
            let url = WavFileSynthesizer.resolveSoundURL(fileName: fileName),
            let player = try? AVAudioPlayer(contentsOf: url) {
             player.numberOfLoops = -1
-            // Keep AVAudioPlayer at 1.0 so SystemVolumeController controls exact hardware volume
-            player.volume = 1.0
+            player.volume = max(0.0, min(1.0, initialGain))
             player.prepareToPlay()
             if player.play() {
                 wakeFilePlayer = player
@@ -393,7 +406,8 @@ final class AlarmAudioManager: ObservableObject {
         startAVAudioEngineNuclearSynth(
             baseFrequency: tone.baseFrequency,
             secondaryFrequency: tone.secondaryFrequency,
-            modulationRateHz: tone.modulationRateHz
+            modulationRateHz: tone.modulationRateHz,
+            initialGain: initialGain
         )
     }
 
@@ -436,7 +450,8 @@ final class AlarmAudioManager: ObservableObject {
 
         setIdleTimerDisabled(true)
         activateOverridePlaybackSession()
-        startFocusAudioPlayerAtFullPlayerGain()
+        let initialProgress = startVol / 0.22
+        startFocusAudioPlayer(initialGain: SystemVolumeController.logarithmicPlayerGain(normalizedProgress: initialProgress, maxGain: 0.75))
         volumeController.startRamp(from: startVol, to: 0.22, duration: duration)
         startFocusWarningTimers()
     }
@@ -479,7 +494,7 @@ final class AlarmAudioManager: ObservableObject {
         }
     }
 
-    private func startFocusAudioPlayerAtFullPlayerGain() {
+    private func startFocusAudioPlayer(initialGain: Float) {
         focusWarningPlayer?.stop()
 
         let wavData: Data
@@ -497,7 +512,7 @@ final class AlarmAudioManager: ObservableObject {
 
         if let player = try? AVAudioPlayer(data: wavData) {
             player.numberOfLoops = -1
-            player.volume = 1.0
+            player.volume = max(0.0, min(1.0, initialGain))
             player.prepareToPlay()
             player.play()
             focusWarningPlayer = player
@@ -510,7 +525,13 @@ final class AlarmAudioManager: ObservableObject {
             Task { @MainActor [weak self] in
                 guard let self, self.isFocusWarningActive, !self.isFocusWarningPaused, let start = self.focusStartDate else { return }
                 self.focusWarningElapsedSeconds = Date().timeIntervalSince(start)
-                self.focusWarningVolumeFraction = min(0.22, self.volumeController.targetHardwareVolume)
+                let currentTarget = min(0.22, self.volumeController.targetHardwareVolume)
+                self.focusWarningVolumeFraction = currentTarget
+                let progress = min(1.0, max(0.0, currentTarget / 0.22))
+                self.focusWarningPlayer?.volume = SystemVolumeController.logarithmicPlayerGain(
+                    normalizedProgress: progress,
+                    maxGain: 0.75
+                )
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -533,7 +554,8 @@ final class AlarmAudioManager: ObservableObject {
     private func startAVAudioEngineNuclearSynth(
         baseFrequency: Double,
         secondaryFrequency: Double,
-        modulationRateHz: Double
+        modulationRateHz: Double,
+        initialGain: Float
     ) {
         let engine = AVAudioEngine()
         let mainMixer = engine.mainMixerNode
@@ -583,7 +605,7 @@ final class AlarmAudioManager: ObservableObject {
 
         engine.attach(sourceNode)
         engine.connect(sourceNode, to: mainMixer, format: sourceFormat)
-        mainMixer.outputVolume = 1.0
+        mainMixer.outputVolume = max(0.0, min(1.0, initialGain))
 
         do {
             try engine.start()

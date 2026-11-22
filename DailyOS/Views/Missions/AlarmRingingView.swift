@@ -133,7 +133,9 @@ struct AlarmRingingView: View {
 
             Spacer()
 
-            Text("NO SNOOZE • 20s FOR 1ST REP • 3s PER REP THEREAFTER")
+            Text(alarm.missionType == .squats
+                 ? "NO SNOOZE • 20s FOR 1ST SQUAT • 3s PER REP THEREAFTER"
+                 : "NO SNOOZE • FLAT 20s WINDOW FROM DO CHALLENGE")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
@@ -161,14 +163,17 @@ struct AlarmRingingView: View {
     private var activeChallengeContainerView: some View {
         VStack(spacing: 12) {
             HStack(spacing: 10) {
-                // Active Countdown Pill (20s initial OR 3.0s per-rep)
+                // Active Countdown Pill (Flat 20s for Steps; 20s initial -> 3.0s per-rep for Squats)
                 HStack(spacing: 6) {
                     Image(systemName: "timer")
-                    if !hasCompletedFirstUnit {
-                        Text(String(format: "1ST REP GRACE: %.1fs", max(0, countdownSecondsRemaining)))
+                    if alarm.missionType == .steps {
+                        Text(String(format: "20s WINDOW: %.1fs", max(0, countdownSecondsRemaining)))
+                            .monospacedDigit()
+                    } else if !hasCompletedFirstUnit {
+                        Text(String(format: "1ST SQUAT GRACE: %.1fs", max(0, countdownSecondsRemaining)))
                             .monospacedDigit()
                     } else {
-                        Text(String(format: "NEXT REP: %.1fs", max(0, countdownSecondsRemaining)))
+                        Text(String(format: "NEXT SQUAT: %.1fs", max(0, countdownSecondsRemaining)))
                             .monospacedDigit()
                     }
                 }
@@ -250,6 +255,9 @@ struct AlarmRingingView: View {
     }
 
     private func handleProgressUnitCompleted(_ newCount: Int) {
+        // Steps uses ONLY a flat 20-second timer from tapping "DO CHALLENGE" (no 3s per-rep timer).
+        guard alarm.missionType == .squats else { return }
+
         hasCompletedFirstUnit = true
         lastUnitCompletedDate = Date()
         countdownSecondsRemaining = 3.0
@@ -265,6 +273,21 @@ struct AlarmRingingView: View {
     private func tickChallengeTimers() {
         let now = Date()
 
+        if alarm.missionType == .steps {
+            // Flat 20-second timer from tapping "DO CHALLENGE" before 1% -> 50% (15s) ramp
+            guard let start = challengeStartDate else { return }
+            let elapsed = now.timeIntervalSince(start)
+            countdownSecondsRemaining = max(0.0, 20.0 - elapsed)
+
+            if countdownSecondsRemaining <= 0.0 && !inactivityPenaltyActive {
+                triggerInactivityEscalation(
+                    message: "20s WINDOW EXPIRED — RAMPING 1%→50% (15s)! FINISH YOUR STEPS!"
+                )
+            }
+            return
+        }
+
+        // Squats: 20s initial grace for Rep 1 -> 3.0s per-rep timer thereafter
         if !hasCompletedFirstUnit {
             guard let start = challengeStartDate else { return }
             let elapsed = now.timeIntervalSince(start)
@@ -272,7 +295,7 @@ struct AlarmRingingView: View {
 
             if countdownSecondsRemaining <= 0.0 && !inactivityPenaltyActive {
                 triggerInactivityEscalation(
-                    message: "20s INITIAL GRACE EXPIRED — RAMPING 1%→50% (15s)! COMPLETE A \(alarm.missionType == .squats ? "SQUAT" : "STEP")!"
+                    message: "20s INITIAL GRACE EXPIRED — RAMPING 1%→50% (15s)! COMPLETE A SQUAT!"
                 )
             }
         } else {
@@ -282,7 +305,7 @@ struct AlarmRingingView: View {
 
             if countdownSecondsRemaining <= 0.0 && !inactivityPenaltyActive {
                 triggerInactivityEscalation(
-                    message: "3s REP TIMER EXPIRED — RAMPING 1%→50% (15s)! COMPLETE NEXT \(alarm.missionType == .squats ? "SQUAT" : "STEP")!"
+                    message: "3s REP TIMER EXPIRED — RAMPING 1%→50% (15s)! COMPLETE NEXT SQUAT!"
                 )
             }
         }

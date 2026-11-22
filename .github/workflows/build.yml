@@ -74,20 +74,39 @@ jobs:
           echo "=== Verifying Info.plist Version ==="
           plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier"
 
-          echo "=== Verifying New v3 Symbols in Mach-O Binary ==="
-          grep -a -F -q "Connect Google Calendar & Tasks" Payload/DailyOS.app/DailyOS
-          grep -a -F -q "DO CHALLENGE" Payload/DailyOS.app/DailyOS
-          grep -a -F -q "Target Steps" Payload/DailyOS.app/DailyOS
+          echo "=== Verifying New v3 Symbols in Mach-O Binary (UTF-8 & UTF-16LE) ==="
+          python3 - <<'EOF'
+          from pathlib import Path
+          import sys
 
-          echo "=== Verifying Old v1/v2 Removed Missions Are Absent ==="
-          if grep -a -F -q "DAILYOS-WAKE-QR" Payload/DailyOS.app/DailyOS; then
-            echo "ERROR: Stale QR string found in binary!"
-            exit 1
-          fi
-          if grep -a -F -q "AI Camera Pushups" Payload/DailyOS.app/DailyOS; then
-            echo "ERROR: Stale Pushups string found in binary!"
-            exit 1
-          fi
+          binary_path = Path("Payload/DailyOS.app/DailyOS")
+          data = binary_path.read_bytes()
+
+          def has_string(s: str) -> bool:
+              return (s.encode("utf-8") in data) or (s.encode("utf-16-le") in data)
+
+          required = [
+              "Connect Google Calendar & Tasks",
+              "DO CHALLENGE",
+              "Target Steps",
+          ]
+          forbidden = [
+              "DAILYOS-WAKE-QR",
+              "AI Camera Pushups",
+          ]
+
+          for item in required:
+              if not has_string(item):
+                  print(f"ERROR: Missing expected v3 string in binary: {item}")
+                  sys.exit(1)
+              print(f"OK (found): {item}")
+
+          for item in forbidden:
+              if has_string(item):
+                  print(f"ERROR: Stale removed string found in binary: {item}")
+                  sys.exit(1)
+              print(f"OK (absent): {item}")
+          EOF
 
           IPA_NAME="${{ steps.meta.outputs.ipa_name }}"
           zip -r9 "${IPA_NAME}" Payload

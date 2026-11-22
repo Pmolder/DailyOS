@@ -34,14 +34,15 @@ final class SystemVolumeController: ObservableObject {
 
     // MARK: - Window Mounting & Internal UISlider Extraction
 
-    /// Ensures the offscreen `MPVolumeView` (`alpha = 0.001`, never hidden) is attached directly
-    /// to the active key `UIWindow` so iOS honors programmatic hardware volume updates.
+    /// Ensures `MPVolumeView` is mounted inside the visible key `UIWindow` bounds (`alpha = 0.011`,
+    /// never hidden, `isUserInteractionEnabled = false`) and immediately laid out so iOS 17–26
+    /// instantiates and honors programmatic updates to its internal `UISlider`.
     func ensureMountedInKeyWindow() {
         let activeWindow = resolveKeyWindow()
 
         if volumeView == nil {
-            let mpView = MPVolumeView(frame: CGRect(x: -1000, y: -1000, width: 100, height: 40))
-            mpView.alpha = 0.001
+            let mpView = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 100, height: 40))
+            mpView.alpha = 0.011
             mpView.isHidden = false
             mpView.isUserInteractionEnabled = false
             mpView.clipsToBounds = true
@@ -52,9 +53,24 @@ final class SystemVolumeController: ObservableObject {
 
         if mpView.superview !== window {
             mpView.removeFromSuperview()
+            mpView.frame = CGRect(x: 0, y: 0, width: 100, height: 40)
             window.addSubview(mpView)
             mountedWindow = window
         }
+        mpView.setNeedsLayout()
+        mpView.layoutIfNeeded()
+    }
+
+    /// Computes a smooth perceptual logarithmic gain (`AVAudioPlayer.volume`) for a normalized
+    /// loudness progress `0.0...1.0` so volume ramps remain clearly audible on iOS 26 alongside
+    /// the hardware `UISlider`.
+    static func logarithmicPlayerGain(normalizedProgress: Float, maxGain: Float = 1.0) -> Float {
+        let clamped = max(0.0, min(1.0, normalizedProgress))
+        guard clamped > 0.0001 else { return 0.0 }
+        // Perceptual dB curve across -32 dB .. 0 dB mapped cleanly into (0.025 ... maxGain)
+        let db = -32.0 * (1.0 - Double(clamped))
+        let perceptual = Float(pow(10.0, db / 20.0))
+        return max(0.025, min(maxGain, perceptual * maxGain))
     }
 
     private func resolveKeyWindow() -> UIWindow? {

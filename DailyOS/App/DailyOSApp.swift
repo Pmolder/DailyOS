@@ -79,6 +79,7 @@ struct DailyOSApp: App {
                 .modelContainer(SharedModelContainer.shared.container)
                 .preferredColorScheme(.dark)
                 .environment(\.calendar, ISOWeekCalendar.current)
+                .environment(\.locale, Locale(identifier: "en_GB"))
         }
     }
 }
