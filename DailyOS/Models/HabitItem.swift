@@ -39,28 +39,44 @@ enum HabitTrackingMode: String, CaseIterable, Codable, Identifiable {
     }
 }
 
-// MARK: - Habit Time-of-Day Segment (Preserved for Migration Safety)
+// MARK: - Habit Time-of-Day Spotlight Tag (Safe Defaults for Lightweight Migration)
 
 enum HabitTimeOfDay: String, CaseIterable, Codable, Identifiable {
+    case anytime = "anytime"
     case morning = "morning"
-    case day = "day"
-    case evening = "evening"
+    case night = "night"
 
     var id: String { rawValue }
 
+    static func from(raw: String) -> HabitTimeOfDay {
+        switch raw.lowercased() {
+        case "morning": return .morning
+        case "night", "evening": return .night
+        default: return .anytime
+        }
+    }
+
     var displayName: String {
         switch self {
+        case .anytime: return "Anytime"
         case .morning: return "Morning"
-        case .day: return "Day"
-        case .evening: return "Evening"
+        case .night: return "Night"
+        }
+    }
+
+    var pillLabel: String {
+        switch self {
+        case .anytime: return "Anytime"
+        case .morning: return "☀️ Morning"
+        case .night: return "🌙 Night"
         }
     }
 
     var iconName: String {
         switch self {
-        case .morning: return "sunrise.fill"
-        case .day: return "sun.max.fill"
-        case .evening: return "moon.stars.fill"
+        case .anytime: return "clock"
+        case .morning: return "sun.max.fill"
+        case .night: return "moon.stars.fill"
         }
     }
 }
@@ -156,7 +172,7 @@ final class HabitItem {
     var trackingModeRaw: String = HabitTrackingMode.binary.rawValue
     var dailyTarget: Double = 1.0
     var unitLabel: String = ""
-    var timeOfDayRaw: String = HabitTimeOfDay.morning.rawValue
+    var timeOfDayRaw: String = HabitTimeOfDay.anytime.rawValue
     var sortOrder: Int = 0
     var reminderEnabled: Bool
     var reminderHour: Int
@@ -178,7 +194,7 @@ final class HabitItem {
         trackingMode: HabitTrackingMode = .binary,
         dailyTarget: Double = 1.0,
         unitLabel: String = "",
-        timeOfDay: HabitTimeOfDay = .morning,
+        timeOfDay: HabitTimeOfDay = .anytime,
         sortOrder: Int = 0,
         reminderEnabled: Bool = false,
         reminderHour: Int = 8,
@@ -238,7 +254,7 @@ final class HabitItem {
     }
 
     var timeOfDay: HabitTimeOfDay {
-        get { HabitTimeOfDay(rawValue: timeOfDayRaw) ?? .morning }
+        get { HabitTimeOfDay.from(raw: timeOfDayRaw) }
         set { timeOfDayRaw = newValue.rawValue }
     }
 

@@ -2,11 +2,13 @@ import Foundation
 import Combine
 import UIKit
 
-/// Real-Time Wall-Clock Auto-Start Focus Engine + Active Deep Work Tracker:
+/// Real-Time Wall-Clock Auto-Start Focus Engine + Active Deep Work Tracker + Post-Completion Celebration / Next-Up Flow:
 /// - Automatically starts any scheduled timed `FocusTaskItem` or Google/Apple Calendar block at `startDate <= now < endDate`
-/// - Scheduled countdown (`endDate - now`) ALWAYS ticks in real wall-clock time (never freezes when paused)
-/// - Play / Pause toggles `isTrackingDeepWork` to count genuine `activeDeepWorkSeconds` into Focused Today, Today's Score, and Weekly Recap
-/// - Drives Lock Screen Live Activity (`FocusLiveActivityManager`) + Floating PiP Top Pill (`FocusPiPManager`) at 1 fps
+/// - Scheduled block ALWAYS progresses in real wall-clock time (never freezes when paused)
+/// - Calm Elapsed-of-Total Time (`0:42 / 45m` → `35m / 45m` → `1h 05m / 1h 30m`) + `0% → 100%` progress bar
+/// - Play / Pause toggles `isTrackingDeepWork` to count genuine `activeDeepWorkSeconds` into Focused Today & Weekly Recap
+/// - 1-Tap "✓ Done" (or natural block end) plays an in-pill 2-phase Celebration (`6s`) → Next Up Preview (`20s` / docked if `<15m`)
+///   with ZERO extra completion notification spam.
 @MainActor
 final class FocusAutoSessionEngine: ObservableObject {
     static let shared = FocusAutoSessionEngine()
@@ -22,18 +24,35 @@ final class FocusAutoSessionEngine: ObservableObject {
         let taskNotes: String
     }
 
+    struct NextUpTaskInfo: Equatable {
+        let headline: String       // e.g., "NEXT: Gym — Upper Body • in 30m" or "✓ ALL CLEAR TODAY"
+        let subtitle: String       // e.g., "5-min heads-up armed" or "2 anytime left"
+        let isAllClear: Bool
+        let nextStartDate: Date?
+        let startsWithin15Minutes: Bool
+    }
+
+    enum CompletionOverlayState: Equatable {
+        case none
+        case celebrating(focusedMinutes: Int, completedTitle: String, startedAt: Date, nextUp: NextUpTaskInfo)
+        case nextUp(info: NextUpTaskInfo, startedAt: Date)
+    }
+
     @Published private(set) var activeSession: LiveSession? = nil
     @Published private(set) var isTrackingDeepWork: Bool = false
     @Published private(set) var remainingSeconds: Int = 45 * 60
     @Published private(set) var activeDeepWorkSeconds: Int = 0
+    @Published private(set) var completionOverlay: CompletionOverlayState = .none
     @Published var editableCue: String = ""
     @Published var adHocDurationMinutes: Int = 45
     @Published var shouldPresentTimerSheet: Bool = false
+    @Published var restoredFromPiP: Bool = false
 
     private var tickCancellable: AnyCancellable?
     private var unloggedActiveSecondsRemainder: Int = 0
     private var dismissedScheduledIDs: Set<String> = []
     private var lastAutoEvaluatedMinuteKey: String = ""
+    private var lastLiveActivityLabel: String = ""
 
     private init() {
         tickCancellable = Timer.publish(every: 1.0, on: .main, in: .common)
@@ -43,7 +62,7 @@ final class FocusAutoSessionEngine: ObservableObject {
             }
     }
 
-    // MARK: - Derived Display Values
+    // MARK: - Derived Display Values (Calm Elapsed-of-Total Time)
 
     var hasLiveSession: Bool {
         activeSession != nil
@@ -58,22 +77,40 @@ final class FocusAutoSessionEngine: ObservableObject {
         return max(60, Int(ceil(s.endDate.timeIntervalSince(s.startDate))))
     }
 
-    var progressFraction: Double {
-        guard totalBlockSeconds > 0 else { return 1.0 }
-        guard activeSession != nil else { return 1.0 }
-        return max(0.0, min(1.0, Double(remainingSeconds) / Double(totalBlockSeconds)))
+    var elapsedSeconds: Int {
+        guard activeSession != nil else { return 0 }
+        return max(0, min(totalBlockSeconds, totalBlockSeconds - remainingSeconds))
     }
 
-    var formattedRemainingClock: String {
-        let clamped = max(0, remainingSeconds)
-        return String(format: "%02d:%02d", clamped / 60, clamped % 60)
+    /// Smoothly fills from `0.0 → 1.0` across the session.
+    var elapsedProgressFraction: Double {
+        guard activeSession != nil, totalBlockSeconds > 0 else { return 0.0 }
+        return max(0.0, min(1.0, Double(elapsedSeconds) / Double(totalBlockSeconds)))
+    }
+
+    /// Calm Elapsed-of-Total text (`0:42 / 45m`, `35m / 45m`, `35m / 1h 30m`, `1h 05m / 1h 30m`).
+    var formattedElapsedOfTotal: String {
+        FocusElapsedTimeFormatter.formatElapsedOfTotal(
+            elapsedSeconds: elapsedSeconds,
+            totalSeconds: totalBlockSeconds
+        )
     }
 
     var activeMinutesLoggedForSession: Int {
         activeDeepWorkSeconds / 60
     }
 
-    // MARK: - Explicit Controls (Play/Pause Active Deep Work, Ad-Hoc Start, Scheduled Focus)
+    // MARK: - PiP Tap Restore Handler
+
+    func handleRestoreFromPiPTap() {
+        restoredFromPiP = true
+        if activeSession != nil && remainingSeconds <= 0 {
+            completeActiveTaskAndCelebrate()
+        }
+        shouldPresentTimerSheet = true
+    }
+
+    // MARK: - Explicit Controls
 
     func focusOnScheduledBlock(
         taskID: String,
@@ -86,6 +123,7 @@ final class FocusAutoSessionEngine: ObservableObject {
         autoStartTracking: Bool = false,
         openTimerSheet: Bool = true
     ) {
+        completionOverlay = .none
         dismissedScheduledIDs.remove(taskID)
         FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: taskID)
 
@@ -127,6 +165,7 @@ final class FocusAutoSessionEngine: ObservableObject {
         requiresPhotoProof: Bool = false,
         taskNotes: String = ""
     ) {
+        completionOverlay = .none
         let mins = max(5, min(240, minutes ?? adHocDurationMinutes))
         adHocDurationMinutes = mins
         let now = Date()
@@ -184,6 +223,77 @@ final class FocusAutoSessionEngine: ObservableObject {
         setDeepWorkTracking(!isTrackingDeepWork)
     }
 
+    // MARK: - 1-Tap "✓ Done" → In-Pill Celebration ("Good Job") + Next Up Preview (Zero Notification Spam)
+
+    func completeActiveTaskAndCelebrate() {
+        guard let session = activeSession else { return }
+
+        // 1. Mark matching FocusTaskItem or Synced Calendar Block as completed
+        markTaskOrCalendarEventCompleted(sessionID: session.id)
+        PhotoProofScheduler.shared.cancelProofs(for: session.id)
+        FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: session.id)
+
+        if session.isScheduledWallClock {
+            dismissedScheduledIDs.insert(session.id)
+        }
+
+        // 2. Log remaining partial active seconds (if user focused >= 30s) & increment session count
+        if unloggedActiveSecondsRemainder >= 30 {
+            HabitMetricsEngine.addFocusMinutesToday(1)
+        }
+        let loggedActiveMins = max(
+            activeDeepWorkSeconds / 60 + (unloggedActiveSecondsRemainder >= 30 ? 1 : 0),
+            elapsedSeconds >= 60 ? (elapsedSeconds / 60) : 1
+        )
+        let displayedFocusedMins = activeDeepWorkSeconds >= 30
+            ? (activeDeepWorkSeconds / 60 + (unloggedActiveSecondsRemainder >= 30 ? 1 : 0))
+            : loggedActiveMins
+
+        if activeDeepWorkSeconds >= 30 || elapsedSeconds >= 60 {
+            HabitMetricsEngine.incrementFocusSessionsToday()
+            WidgetSyncCoordinator.syncSnapshotFromStore()
+            Task { await DailyNotificationManager.shared.refreshScheduledNotifications() }
+        }
+
+        // 3. Compute live Next Up Preview (next timed FocusTaskItem or Google/Apple Calendar event today)
+        let nextUp = computeNextUpTask(excludingID: session.id)
+
+        // 4. Transition cleanly into Phase 1 (6s Celebration) directly inside Floating PiP & Timer Sheet
+        activeSession = nil
+        isTrackingDeepWork = false
+        remainingSeconds = adHocDurationMinutes * 60
+        activeDeepWorkSeconds = 0
+        unloggedActiveSecondsRemainder = 0
+        restoredFromPiP = false
+        lastLiveActivityLabel = ""
+        FocusLiveActivityManager.shared.endAll()
+
+        completionOverlay = .celebrating(
+            focusedMinutes: max(1, displayedFocusedMins),
+            completedTitle: session.title,
+            startedAt: Date(),
+            nextUp: nextUp
+        )
+
+        FocusPiPManager.shared.armPiPIfNeeded()
+        FocusPiPManager.shared.renderFrame(
+            mode: .celebration(
+                focusedMinutes: max(1, displayedFocusedMins),
+                completedTitle: session.title,
+                shimmerPhase: 0.15
+            )
+        )
+
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    func dismissCompletionOverlay() {
+        completionOverlay = .none
+        if activeSession == nil {
+            FocusPiPManager.shared.stopAndDisarmPiP()
+        }
+    }
+
     func endCurrentSession(markDismissedIfScheduled: Bool = true) {
         if let session = activeSession {
             if markDismissedIfScheduled && session.isScheduledWallClock {
@@ -197,11 +307,105 @@ final class FocusAutoSessionEngine: ObservableObject {
         }
         activeSession = nil
         isTrackingDeepWork = false
+        completionOverlay = .none
+        restoredFromPiP = false
         remainingSeconds = adHocDurationMinutes * 60
         activeDeepWorkSeconds = 0
         unloggedActiveSecondsRemainder = 0
+        lastLiveActivityLabel = ""
         FocusLiveActivityManager.shared.endAll()
         FocusPiPManager.shared.stopAndDisarmPiP()
+    }
+
+    // MARK: - Live Next-Up Task Discovery (Today's Timed Focus Tasks + Synced Calendar Events)
+
+    func computeNextUpTask(excludingID: String? = nil) -> NextUpTaskInfo {
+        let now = Date()
+        let todayKey = HabitItem.dateKey(for: now)
+        let tasks = SharedModelContainer.shared.fetchFocusTasks(dayKey: todayKey)
+        let calendarBlocks = FocusAccountabilityManager.shared.upcomingBlocks
+        let linkedIDs = Set(tasks.compactMap(\.googleCalendarEventID).filter { !$0.isEmpty })
+
+        var candidates: [(title: String, startDate: Date)] = []
+
+        for task in tasks where !task.isCompleted {
+            if let excluded = excludingID, task.id.uuidString == excluded { continue }
+            guard let start = task.startTime, start > now else { continue }
+            candidates.append((task.title, start))
+        }
+
+        for block in calendarBlocks where !block.isAllDay && block.dayKey == todayKey {
+            if let excluded = excludingID, block.id == excluded { continue }
+            if let rID = block.remoteEventID, linkedIDs.contains(rID) { continue }
+            let compKey = CalendarEventCompletionStore.eventKey(for: block)
+            if CalendarEventCompletionStore.shared.isCompleted(eventKey: compKey) { continue }
+            guard block.startDate > now else { continue }
+            candidates.append((block.title, block.startDate))
+        }
+
+        if let next = candidates.sorted(by: { $0.startDate < $1.startDate }).first {
+            let minsAway = max(1, Int(ceil(next.startDate.timeIntervalSince(now) / 60.0)))
+            let timingText: String
+            if minsAway < 60 {
+                timingText = "in \(minsAway)m"
+            } else if minsAway <= 120 {
+                let h = minsAway / 60
+                let m = minsAway % 60
+                timingText = m == 0 ? "in \(h)h" : "in \(h)h \(m)m"
+            } else {
+                let f = DateFormatter()
+                f.calendar = ISOWeekCalendar.current
+                f.timeZone = TimeZone.current
+                f.dateFormat = "HH:mm"
+                timingText = "at \(f.string(from: next.startDate))"
+            }
+
+            let subtitle = minsAway <= 15
+                ? "Auto-starting soon • stay ready"
+                : "5-min heads-up armed before start"
+
+            return NextUpTaskInfo(
+                headline: "NEXT: \(next.title) • \(timingText)",
+                subtitle: subtitle,
+                isAllClear: false,
+                nextStartDate: next.startDate,
+                startsWithin15Minutes: minsAway <= 15
+            )
+        }
+
+        let remainingAnytime = tasks.filter { !$0.isCompleted && $0.startTime == nil && $0.id.uuidString != excludingID }.count
+        let subtitle = remainingAnytime > 0
+            ? (remainingAnytime == 1 ? "1 anytime task left" : "\(remainingAnytime) anytime tasks left")
+            : "All scheduled blocks complete"
+
+        return NextUpTaskInfo(
+            headline: "✓ ALL CLEAR TODAY",
+            subtitle: subtitle,
+            isAllClear: true,
+            nextStartDate: nil,
+            startsWithin15Minutes: false
+        )
+    }
+
+    private func markTaskOrCalendarEventCompleted(sessionID: String) {
+        let todayKey = HabitItem.dateKey(for: Date())
+        let tasks = SharedModelContainer.shared.fetchFocusTasks(dayKey: todayKey)
+
+        if let matchedTask = tasks.first(where: { $0.id.uuidString == sessionID }) {
+            if !matchedTask.isCompleted {
+                matchedTask.isCompleted = true
+                SharedModelContainer.shared.save()
+            }
+            return
+        }
+
+        let blocks = FocusAccountabilityManager.shared.upcomingBlocks
+        if let matchedBlock = blocks.first(where: { $0.id == sessionID }) {
+            let compKey = CalendarEventCompletionStore.eventKey(for: matchedBlock)
+            if !CalendarEventCompletionStore.shared.isCompleted(eventKey: compKey) {
+                _ = CalendarEventCompletionStore.shared.toggle(eventKey: compKey, dayKey: matchedBlock.dayKey)
+            }
+        }
     }
 
     // MARK: - Wall-Clock Auto-Start Discovery
@@ -212,14 +416,12 @@ final class FocusAutoSessionEngine: ObservableObject {
         let tasks = SharedModelContainer.shared.fetchFocusTasks(dayKey: todayKey)
         let calendarBlocks = FocusAccountabilityManager.shared.upcomingBlocks
 
-        // Refresh calm nudges once per minute or when schedule changes
         let minuteKey = "\(todayKey)_\(ISOWeekCalendar.current.component(.hour, from: now))_\(ISOWeekCalendar.current.component(.minute, from: now))"
         if minuteKey != lastAutoEvaluatedMinuteKey {
             lastAutoEvaluatedMinuteKey = minuteKey
             FocusNudgeScheduler.shared.rescheduleUpcomingNudges(tasks: tasks, calendarBlocks: calendarBlocks)
         }
 
-        // If user already has an active session running (either ad-hoc or still inside wall-clock bounds), keep it
         if let current = activeSession, current.endDate > now {
             return
         }
@@ -232,6 +434,7 @@ final class FocusAutoSessionEngine: ObservableObject {
             let id = task.id.uuidString
             guard !dismissedScheduledIDs.contains(id) else { continue }
 
+            completionOverlay = .none
             activeSession = LiveSession(
                 id: id,
                 title: task.title,
@@ -246,7 +449,7 @@ final class FocusAutoSessionEngine: ObservableObject {
             remainingSeconds = max(0, Int(ceil(end.timeIntervalSince(now))))
             activeDeepWorkSeconds = 0
             unloggedActiveSecondsRemainder = 0
-            isTrackingDeepWork = false // Starts wall-clock immediately; Play toggles Active Deep Work tracking
+            isTrackingDeepWork = false
             syncLiveActivityAndPiP()
             return
         }
@@ -260,6 +463,7 @@ final class FocusAutoSessionEngine: ObservableObject {
             guard block.startDate <= now && now < block.endDate else { continue }
             guard !dismissedScheduledIDs.contains(block.id) else { continue }
 
+            completionOverlay = .none
             let calProofKey = CalendarPhotoProofStore.stableKey(for: block)
             activeSession = LiveSession(
                 id: block.id,
@@ -281,17 +485,22 @@ final class FocusAutoSessionEngine: ObservableObject {
         }
     }
 
-    // MARK: - 1-Second Heartbeat (Wall Clock + Active Deep Work + PiP Frame)
+    // MARK: - 1-Second Heartbeat
 
     private func handleSecondTick() {
         evaluateAutoStartSchedule()
-        guard let session = activeSession else { return }
 
+        // A. Handle Post-Completion Celebration (6s) → Next Up Preview (20s or docked if <15m)
+        if activeSession == nil {
+            handleCompletionOverlayTick()
+            return
+        }
+
+        guard let session = activeSession else { return }
         let now = Date()
 
-        // 1. Update remaining countdown
+        // 1. Update remaining / elapsed progress
         if session.isScheduledWallClock {
-            // Scheduled block ALWAYS ticks on real wall-clock time even while paused
             remainingSeconds = max(0, Int(ceil(session.endDate.timeIntervalSince(now))))
         } else if isTrackingDeepWork {
             remainingSeconds = max(0, remainingSeconds - 1)
@@ -308,48 +517,136 @@ final class FocusAutoSessionEngine: ObservableObject {
             }
         }
 
-        // 3. Render 1 fps Floating PiP Pill Frame (Normal OR Unified Photo-Proof Morph!)
-        let pendingPhotoSecs: Int? = {
-            guard let req = PhotoProofScheduler.shared.activeCaptureRequest else { return nil }
-            let left = Int(ceil(req.deadline.timeIntervalSinceNow))
-            return left > 0 ? left : nil
-        }()
+        // 3. Keep Lock Screen Live Activity label in sync whenever elapsed-of-total minute changes
+        let currentLabel = formattedElapsedOfTotal
+        if currentLabel != lastLiveActivityLabel && (elapsedSeconds >= 60 || elapsedSeconds % 5 == 0) {
+            lastLiveActivityLabel = currentLabel
+            FocusLiveActivityManager.shared.update(
+                isPaused: !session.isScheduledWallClock && !isTrackingDeepWork,
+                remainingSeconds: remainingSeconds,
+                totalDurationSeconds: totalBlockSeconds,
+                elapsedOfTotalText: currentLabel
+            )
+        }
 
-        FocusPiPManager.shared.renderFrame(
-            title: session.title,
-            countdownText: formattedRemainingClock,
-            isActiveDeepWork: isTrackingDeepWork,
-            activeMinutesLogged: activeMinutesLoggedForSession,
-            photoProofSecondsLeft: pendingPhotoSecs
-        )
+        // 4. Render 1 fps Floating PiP Pill Frame (Photo-Proof Alert OR Calm Elapsed-of-Total Pill)
+        if let req = PhotoProofScheduler.shared.activeCaptureRequest {
+            let secsLeft = Int(ceil(req.deadline.timeIntervalSinceNow))
+            if secsLeft > 0 {
+                FocusPiPManager.shared.renderFrame(
+                    mode: .photoProofAlert(title: req.taskTitle, secondsLeft: secsLeft)
+                )
+            } else {
+                FocusPiPManager.shared.renderFrame(
+                    mode: .activeFocus(
+                        title: session.title,
+                        elapsedOfTotalText: currentLabel,
+                        progressFraction: elapsedProgressFraction,
+                        isActiveDeepWork: isTrackingDeepWork,
+                        activeMinutesLogged: activeMinutesLoggedForSession
+                    )
+                )
+            }
+        } else {
+            FocusPiPManager.shared.renderFrame(
+                mode: .activeFocus(
+                    title: session.title,
+                    elapsedOfTotalText: currentLabel,
+                    progressFraction: elapsedProgressFraction,
+                    isActiveDeepWork: isTrackingDeepWork,
+                    activeMinutesLogged: activeMinutesLoggedForSession
+                )
+            )
+        }
 
-        // 4. Finish automatically when remaining countdown hits 0
+        // 5. Auto-trigger Celebration + Next Up when block reaches 100% (45m / 45m)
         if remainingSeconds <= 0 {
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            endCurrentSession(markDismissedIfScheduled: true)
+            completeActiveTaskAndCelebrate()
+        }
+    }
+
+    private func handleCompletionOverlayTick() {
+        let now = Date()
+        switch completionOverlay {
+        case .none:
+            return
+
+        case .celebrating(let focusedMins, let completedTitle, let startedAt, _):
+            let elapsed = now.timeIntervalSince(startedAt)
+            if elapsed >= 6.0 {
+                let refreshedNext = computeNextUpTask()
+                completionOverlay = .nextUp(info: refreshedNext, startedAt: now)
+                FocusPiPManager.shared.renderFrame(
+                    mode: .nextUpPreview(
+                        headline: refreshedNext.headline,
+                        subtitle: refreshedNext.subtitle,
+                        isAllClear: refreshedNext.isAllClear
+                    )
+                )
+            } else {
+                let phase = min(1.0, max(0.0, elapsed / 6.0))
+                FocusPiPManager.shared.renderFrame(
+                    mode: .celebration(
+                        focusedMinutes: focusedMins,
+                        completedTitle: completedTitle,
+                        shimmerPhase: phase
+                    )
+                )
+            }
+
+        case .nextUp(let info, let startedAt):
+            let elapsed = now.timeIntervalSince(startedAt)
+            // Keep docked if next task starts within 15 min, otherwise auto-dismiss after 20s
+            if info.startsWithin15Minutes, let nextStart = info.nextStartDate, nextStart > now {
+                let refreshed = computeNextUpTask()
+                completionOverlay = .nextUp(info: refreshed, startedAt: startedAt)
+                FocusPiPManager.shared.renderFrame(
+                    mode: .nextUpPreview(
+                        headline: refreshed.headline,
+                        subtitle: refreshed.subtitle,
+                        isAllClear: refreshed.isAllClear
+                    )
+                )
+            } else if elapsed >= 20.0 {
+                dismissCompletionOverlay()
+            } else {
+                FocusPiPManager.shared.renderFrame(
+                    mode: .nextUpPreview(
+                        headline: info.headline,
+                        subtitle: info.subtitle,
+                        isAllClear: info.isAllClear
+                    )
+                )
+            }
         }
     }
 
     private func syncLiveActivityAndPiP() {
         guard let session = activeSession else {
             FocusLiveActivityManager.shared.endAll()
-            FocusPiPManager.shared.stopAndDisarmPiP()
+            if case .none = completionOverlay {
+                FocusPiPManager.shared.stopAndDisarmPiP()
+            }
             return
         }
 
         FocusPiPManager.shared.armPiPIfNeeded()
+        let label = formattedElapsedOfTotal
+        lastLiveActivityLabel = label
 
         if session.isScheduledWallClock {
             FocusLiveActivityManager.shared.start(
                 taskTitle: session.title,
                 focusCue: editableCue.isEmpty ? session.cue : editableCue,
-                durationSeconds: max(60, remainingSeconds)
+                durationSeconds: totalBlockSeconds,
+                elapsedSeconds: elapsedSeconds
             )
             if !isTrackingDeepWork {
                 FocusLiveActivityManager.shared.update(
-                    isPaused: false, // Wall clock keeps counting on Lock Screen
+                    isPaused: false,
                     remainingSeconds: remainingSeconds,
-                    totalDurationSeconds: totalBlockSeconds
+                    totalDurationSeconds: totalBlockSeconds,
+                    elapsedOfTotalText: label
                 )
             }
         } else {
@@ -357,13 +654,15 @@ final class FocusAutoSessionEngine: ObservableObject {
                 FocusLiveActivityManager.shared.start(
                     taskTitle: session.title,
                     focusCue: editableCue.isEmpty ? session.cue : editableCue,
-                    durationSeconds: max(60, remainingSeconds)
+                    durationSeconds: totalBlockSeconds,
+                    elapsedSeconds: elapsedSeconds
                 )
             } else {
                 FocusLiveActivityManager.shared.update(
                     isPaused: true,
                     remainingSeconds: remainingSeconds,
-                    totalDurationSeconds: totalBlockSeconds
+                    totalDurationSeconds: totalBlockSeconds,
+                    elapsedOfTotalText: label
                 )
             }
         }

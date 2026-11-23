@@ -16,6 +16,7 @@ struct HabitEditorView: View {
     @State private var trackingMode: HabitTrackingMode = .binary
     @State private var dailyTarget: Int = 8
     @State private var unitLabel: String = ""
+    @State private var timeOfDay: HabitTimeOfDay = .anytime
     @State private var isDailyFrequency: Bool = true
     @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6, 7, 1]
     @State private var reminderEnabled: Bool = false
@@ -25,6 +26,7 @@ struct HabitEditorView: View {
     @State private var showingIconPicker = false
     @Namespace private var habitTypeNS
     @Namespace private var trackingModeNS
+    @Namespace private var timeOfDayNS
 
     private var selectedAccent: Color {
         Color(hex: colorHex)
@@ -269,6 +271,44 @@ struct HabitEditorView: View {
                             }
                         }
 
+                        // TIME OF DAY SPOTLIGHT TAG (Anytime | ☀️ Morning | 🌙 Night)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("TIME OF DAY").eyebrowStyle()
+
+                            HStack(spacing: 4) {
+                                ForEach(HabitTimeOfDay.allCases) { slot in
+                                    let selected = timeOfDay == slot
+                                    Button {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        withAnimation(ProMotionSpring.glide) {
+                                            timeOfDay = slot
+                                        }
+                                    } label: {
+                                        ZStack {
+                                            if selected {
+                                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                                    .fill(DailyOSTheme.buttonSurface)
+                                                    .matchedGeometryEffect(id: "habitTimeOfDayPill", in: timeOfDayNS)
+                                            }
+                                            Text(slot.pillLabel)
+                                                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 10)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(4)
+                            .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+
+                            Text("Morning & Night habits automatically spotlight at the top until checked off.")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                        }
+
                         // FREQUENCY (Daily or ISO-8601 Monday–Sunday Pills)
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {
@@ -417,6 +457,7 @@ struct HabitEditorView: View {
             trackingMode = habit.trackingMode
             dailyTarget = max(1, Int(habit.dailyTarget))
             unitLabel = habit.unitLabel
+            timeOfDay = habit.timeOfDay
             repeatDays = habit.repeatDays.isEmpty ? [2, 3, 4, 5, 6, 7, 1] : habit.repeatDays
             isDailyFrequency = repeatDays.count == 7
             reminderEnabled = habit.reminderEnabled
@@ -456,6 +497,7 @@ struct HabitEditorView: View {
             habit.trackingMode = kind == .quit ? .binary : trackingMode
             habit.dailyTarget = finalTarget
             habit.unitLabel = unitLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            habit.timeOfDay = timeOfDay
             habit.repeatDays = finalDays
             habit.reminderEnabled = reminderEnabled
             habit.reminderHour = hour
@@ -472,6 +514,7 @@ struct HabitEditorView: View {
                 trackingMode: kind == .quit ? .binary : trackingMode,
                 dailyTarget: finalTarget,
                 unitLabel: unitLabel.trimmingCharacters(in: .whitespacesAndNewlines),
+                timeOfDay: timeOfDay,
                 sortOrder: nextOrder,
                 reminderEnabled: reminderEnabled,
                 reminderHour: hour,

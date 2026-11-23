@@ -201,6 +201,12 @@ struct FocusTabView: View {
         let timedTasks = dayTasks.filter { $0.startTime != nil }
         let anytimeTasks = dayTasks.filter { $0.startTime == nil }
         let daySynced = syncedBlocks(for: selectedDate)
+        let calCompletedCount = daySynced.filter { calendarCompletions.isCompleted($0) }.count
+        let todoScore = HabitMetricsEngine.todoCompletionScore(
+            focusTasks: dayTasks,
+            completedCalendarEventsCount: calCompletedCount,
+            totalCalendarEventsCount: daySynced.count
+        )
         let hasTimedColumn = !timedTasks.isEmpty || !daySynced.isEmpty
         let hasAnytimeColumn = !anytimeTasks.isEmpty
         let shouldSplitSideBySide = hasTimedColumn && hasAnytimeColumn
@@ -208,6 +214,10 @@ struct FocusTabView: View {
         return VStack(spacing: 12) {
             // 1. Monday-First 7-Day ISO-8601 Week Slider
             weekSliderCard
+                .padding(.horizontal, 18)
+
+            // 1b. Sleek Compact Dedicated To-Do Progress Ring Pill for Selected Day
+            dayTodoProgressPill(score: todoScore)
                 .padding(.horizontal, 18)
 
             // 2. Active Calendar Accountability Banner (only when voluntary check-in proof is active)
@@ -469,6 +479,62 @@ struct FocusTabView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Dedicated Compact To-Do Progress Ring Pill (Pure Focus Tasks + Calendar Events)
+
+    private func dayTodoProgressPill(score: TodoCompletionScore) -> some View {
+        let progress = Double(score.percent) / 100.0
+        let ringTint = score.totalCount > 0 && score.completedCount == score.totalCount
+            ? DailyOSTheme.emerald
+            : DailyOSTheme.skyGlow
+
+        return HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .stroke(Color.white.opacity(0.10), lineWidth: 3)
+                    .frame(width: 28, height: 28)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(ringTint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .frame(width: 28, height: 28)
+                    .shadow(color: ringTint.opacity(0.5), radius: 4)
+                    .animation(ProMotionSpring.ringFill, value: progress)
+
+                Image(systemName: score.percent == 100 && score.totalCount > 0 ? "checkmark" : "checklist")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundStyle(ringTint)
+            }
+
+            Text("TO-DO PROGRESS")
+                .font(.system(size: 10.5, weight: .black, design: .rounded))
+                .tracking(1.0)
+                .foregroundStyle(DailyOSTheme.eyebrow)
+
+            Spacer()
+
+            HStack(spacing: 6) {
+                Text("\(score.completedCount) / \(score.totalCount)")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .foregroundStyle(Color.white)
+
+                Text("•")
+                    .foregroundStyle(DailyOSTheme.eyebrow)
+
+                Text("\(score.percent)%")
+                    .font(.system(size: 13, weight: .black, design: .rounded))
+                    .monospacedDigit()
+                    .contentTransition(.numericText())
+                    .animation(ProMotionSpring.ringFill, value: score.percent)
+                    .foregroundStyle(ringTint)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .ambientCard(accent: ringTint, cornerRadius: 16, washOpacity: 0.08)
     }
 
     // MARK: - Interactive Monday-First Week Slider Card
@@ -1567,12 +1633,16 @@ struct FocusActiveTimerSheet: View {
     @ObservedObject private var pipManager = FocusPiPManager.shared
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
 
-    @State private var loggedBanner: String? = nil
     private let presets: [Int] = [15, 25, 45, 60, 90]
 
     private var ringAccent: Color {
-        if !sessionEngine.hasLiveSession { return DailyOSTheme.skyGlow }
-        return sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")
+        switch sessionEngine.completionOverlay {
+        case .celebrating: return DailyOSTheme.emerald
+        case .nextUp(let info, _): return info.isAllClear ? DailyOSTheme.emerald : DailyOSTheme.indigoGlow
+        case .none:
+            if !sessionEngine.hasLiveSession { return DailyOSTheme.skyGlow }
+            return sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")
+        }
     }
 
     var body: some View {
@@ -1580,10 +1650,10 @@ struct FocusActiveTimerSheet: View {
             DailyOSTheme.canvas.ignoresSafeArea()
 
             RadialGradient(
-                colors: [ringAccent.opacity(0.13), Color.clear],
+                colors: [ringAccent.opacity(0.14), Color.clear],
                 center: .center,
                 startRadius: 40,
-                endRadius: 270
+                endRadius: 275
             )
             .ignoresSafeArea()
 
@@ -1591,6 +1661,7 @@ struct FocusActiveTimerSheet: View {
                 // Top Bar: Minimize + Status + Floating PiP Pill Launch Button
                 HStack {
                     FrostedCircleButton(icon: "chevron.down", size: 40) {
+                        sessionEngine.restoredFromPiP = false
                         sessionEngine.shouldPresentTimerSheet = false
                         dismiss()
                     }
@@ -1616,7 +1687,7 @@ struct FocusActiveTimerSheet: View {
                         tint: pipManager.isPiPActive ? DailyOSTheme.emerald : DailyOSTheme.skyGlow
                     ) {
                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        if !sessionEngine.hasLiveSession {
+                        if !sessionEngine.hasLiveSession && sessionEngine.completionOverlay == .none {
                             sessionEngine.setDeepWorkTracking(true)
                         }
                         pipManager.startPiPManuallyIfSupported()
@@ -1625,68 +1696,176 @@ struct FocusActiveTimerSheet: View {
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
 
+                // Quick "✓ Mark Done" Action Banner (when restored from PiP or live session is near/at completion)
+                if sessionEngine.hasLiveSession && (sessionEngine.restoredFromPiP || sessionEngine.elapsedProgressFraction >= 0.85) {
+                    Button {
+                        withAnimation(ProMotionSpring.pop) {
+                            sessionEngine.completeActiveTaskAndCelebrate()
+                        }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 15, weight: .bold))
+                            Text("Finished \"\(sessionEngine.sessionTitle)\"? Tap to Mark Done")
+                                .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                                .lineLimit(1)
+                            Spacer(minLength: 4)
+                            Text("✓ Mark Done")
+                                .font(.system(size: 11, weight: .black, design: .rounded))
+                                .foregroundStyle(Color.black)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(DailyOSTheme.emerald, in: Capsule())
+                        }
+                        .foregroundStyle(DailyOSTheme.emerald)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .ambientCard(accent: DailyOSTheme.emerald, cornerRadius: 16, washOpacity: 0.14)
+                    }
+                    .buttonStyle(MidnightPressButtonStyle())
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
                 Spacer()
 
-                // Iconic Glowing Ring + Real-Time Countdown + Active/Paused Status Pill
-                ZStack {
-                    OrganicBreathingAura(color: ringAccent, diameter: 318)
-                    AmbientBloomRing(
-                        progress: sessionEngine.progressFraction,
-                        color: ringAccent,
-                        lineWidth: 14,
-                        diameter: 266
-                    )
-
-                    VStack(spacing: 8) {
-                        Text(sessionEngine.sessionTitle.uppercased())
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                            .tracking(1.6)
-                            .foregroundStyle(DailyOSTheme.eyebrow)
-                            .lineLimit(1)
-                            .frame(maxWidth: 185)
-
-                        Text(sessionEngine.formattedRemainingClock)
-                            .font(.system(size: 54, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.white)
-                            .contentTransition(.numericText(countsDown: true))
-                            .animation(.easeInOut(duration: 0.2), value: sessionEngine.remainingSeconds)
-
-                        // Glowing Active Deep Work vs Paused Badge
-                        if sessionEngine.hasLiveSession {
-                            HStack(spacing: 5) {
-                                Circle()
-                                    .fill(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
-                                    .frame(width: 7, height: 7)
-                                Text(sessionEngine.isTrackingDeepWork
-                                     ? "ACTIVE • \(sessionEngine.activeMinutesLoggedForSession)m logged"
-                                     : "PAUSED • \(sessionEngine.activeMinutesLoggedForSession)m logged")
-                                    .font(.system(size: 11, weight: .black, design: .rounded))
-                                    .monospacedDigit()
-                                    .foregroundStyle(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(
-                                (sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")).opacity(0.16),
-                                in: Capsule()
-                            )
+                // Centerpiece: Two-Phase Completion Celebration / Next-Up Card OR Calm Elapsed-of-Total Ring
+                switch sessionEngine.completionOverlay {
+                case .celebrating(let focusedMins, let completedTitle, _, _):
+                    VStack(spacing: 16) {
+                        ZStack {
+                            OrganicBreathingAura(color: DailyOSTheme.emerald, diameter: 250)
+                            Circle()
+                                .fill(DailyOSTheme.emerald.opacity(0.18))
+                                .frame(width: 112, height: 112)
+                                .overlay(Circle().stroke(DailyOSTheme.emerald, lineWidth: 3))
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 46, weight: .black))
+                                .foregroundStyle(DailyOSTheme.emerald)
                         }
 
-                        TextField(
-                            "",
-                            text: $sessionEngine.editableCue,
-                            prompt: Text("phone in another room").foregroundStyle(Color.white.opacity(0.32))
+                        Text("✓ GOOD JOB! • \(focusedMins)m focused")
+                            .font(.system(size: 24, weight: .black, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(DailyOSTheme.emerald)
+
+                        Text("Completed \"\(completedTitle)\"")
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.84))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 28)
+                    }
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+
+                case .nextUp(let info, _):
+                    VStack(spacing: 16) {
+                        ZStack {
+                            OrganicBreathingAura(color: ringAccent, diameter: 230)
+                            Circle()
+                                .fill(ringAccent.opacity(0.18))
+                                .frame(width: 96, height: 96)
+                                .overlay(Circle().stroke(ringAccent.opacity(0.7), lineWidth: 2.5))
+                            Image(systemName: info.isAllClear ? "sparkles" : "calendar.badge.clock")
+                                .font(.system(size: 38, weight: .bold))
+                                .foregroundStyle(ringAccent)
+                        }
+
+                        Text(info.headline)
+                            .font(.system(size: 21, weight: .black, design: .rounded))
+                            .foregroundStyle(info.isAllClear ? DailyOSTheme.emerald : Color.white)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+
+                        Text(info.subtitle)
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                            .multilineTextAlignment(.center)
+
+                        Button {
+                            sessionEngine.dismissCompletionOverlay()
+                            sessionEngine.shouldPresentTimerSheet = false
+                            dismiss()
+                        } label: {
+                            Text("Back to Focus")
+                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                                .foregroundStyle(Color.black)
+                                .padding(.horizontal, 24)
+                                .padding(.vertical, 12)
+                                .background(ringAccent, in: Capsule())
+                        }
+                        .buttonStyle(MidnightPressButtonStyle())
+                        .padding(.top, 6)
+                    }
+                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+
+                case .none:
+                    // Iconic Glowing Ring (0% -> 100%) + Smart Elapsed-of-Total Time (`35m / 45m`)
+                    ZStack {
+                        OrganicBreathingAura(color: ringAccent, diameter: 318)
+                        AmbientBloomRing(
+                            progress: sessionEngine.hasLiveSession ? sessionEngine.elapsedProgressFraction : 0.0,
+                            color: ringAccent,
+                            lineWidth: 14,
+                            diameter: 266
                         )
-                        .font(.system(size: 13, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.68))
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 180)
+
+                        VStack(spacing: 8) {
+                            Text(sessionEngine.sessionTitle.uppercased())
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .tracking(1.6)
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                                .lineLimit(1)
+                                .frame(maxWidth: 185)
+
+                            Text(sessionEngine.formattedElapsedOfTotal)
+                                .font(.system(size: sessionEngine.formattedElapsedOfTotal.count > 11 ? 30 : 38, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.white)
+                                .contentTransition(.numericText())
+                                .animation(.easeInOut(duration: 0.2), value: sessionEngine.formattedElapsedOfTotal)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.78)
+                                .frame(maxWidth: 215)
+
+                            // Glowing Active Deep Work vs Paused Badge
+                            if sessionEngine.hasLiveSession {
+                                HStack(spacing: 5) {
+                                    Circle()
+                                        .fill(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
+                                        .frame(width: 7, height: 7)
+                                    Text(sessionEngine.isTrackingDeepWork
+                                         ? "ACTIVE • \(sessionEngine.activeMinutesLoggedForSession)m logged"
+                                         : "PAUSED • \(sessionEngine.activeMinutesLoggedForSession)m logged")
+                                        .font(.system(size: 11, weight: .black, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
+                                }
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 4)
+                                .background(
+                                    (sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")).opacity(0.16),
+                                    in: Capsule()
+                                )
+                            }
+
+                            TextField(
+                                "",
+                                text: $sessionEngine.editableCue,
+                                prompt: Text("phone in another room").foregroundStyle(Color.white.opacity(0.32))
+                            )
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.68))
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 180)
+                        }
                     }
                 }
 
                 // Helpful explanation for Scheduled Auto-Start Wall-Clock blocks while paused
-                if sessionEngine.activeSession?.isScheduledWallClock == true && !sessionEngine.isTrackingDeepWork {
+                if sessionEngine.completionOverlay == .none,
+                   sessionEngine.activeSession?.isScheduledWallClock == true,
+                   !sessionEngine.isTrackingDeepWork {
                     Text("Scheduled block is ticking on wall clock — press Play to log Active Deep Work.")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(DailyOSTheme.eyebrow)
@@ -1695,8 +1874,8 @@ struct FocusActiveTimerSheet: View {
                         .padding(.top, 16)
                 }
 
-                // Quick Duration Presets (when no live session is active)
-                if !sessionEngine.hasLiveSession {
+                // Quick Duration Presets (when no live session & no completion overlay)
+                if !sessionEngine.hasLiveSession && sessionEngine.completionOverlay == .none {
                     HStack(spacing: 8) {
                         ForEach(presets, id: \.self) { mins in
                             let selected = sessionEngine.adHocDurationMinutes == mins
@@ -1718,87 +1897,96 @@ struct FocusActiveTimerSheet: View {
                     .padding(.top, 26)
                 }
 
-                if let loggedBanner {
-                    Text(loggedBanner)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .foregroundStyle(DailyOSTheme.emerald)
-                        .padding(.top, 14)
-                }
-
                 Spacer()
 
-                // Bottom Controls: Finish / Play-Pause Active Deep Work / Optional Photo Proof
-                HStack(spacing: 28) {
-                    VStack(spacing: 8) {
-                        FrostedCircleButton(icon: "checkmark", size: 54, tint: DailyOSTheme.emerald) {
-                            let loggedMins = sessionEngine.activeMinutesLoggedForSession
-                            sessionEngine.endCurrentSession(markDismissedIfScheduled: true)
-                            if loggedMins > 0 {
-                                loggedBanner = "Logged \(loggedMins)m Active Deep Work"
-                                UINotificationFeedbackGenerator().notificationOccurred(.success)
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                // Prominent 1-Tap Emerald "✓ Done" Pill Button + Play/Pause & Photo Proof Controls
+                if sessionEngine.completionOverlay == .none {
+                    VStack(spacing: 18) {
+                        if sessionEngine.hasLiveSession {
+                            Button {
+                                withAnimation(ProMotionSpring.pop) {
+                                    sessionEngine.completeActiveTaskAndCelebrate()
+                                }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "checkmark")
+                                        .font(.system(size: 14, weight: .black))
+                                    Text("✓ Done")
+                                        .font(.system(size: 16, weight: .black, design: .rounded))
+                                }
+                                .foregroundStyle(Color.black)
+                                .padding(.horizontal, 34)
+                                .padding(.vertical, 13)
+                                .background(DailyOSTheme.emerald, in: Capsule())
+                                .shadow(color: DailyOSTheme.emerald.opacity(0.38), radius: 12)
+                            }
+                            .buttonStyle(MidnightPressButtonStyle())
+                        }
+
+                        HStack(spacing: 28) {
+                            VStack(spacing: 8) {
+                                FrostedCircleButton(icon: "xmark", size: 54, tint: DailyOSTheme.eyebrow) {
+                                    sessionEngine.endCurrentSession(markDismissedIfScheduled: true)
                                     sessionEngine.shouldPresentTimerSheet = false
                                     dismiss()
                                 }
-                            } else {
-                                sessionEngine.shouldPresentTimerSheet = false
-                                dismiss()
+                                Text("End")
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.eyebrow)
                             }
-                        }
-                        Text("Finish")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.eyebrow)
-                    }
 
-                    VStack(spacing: 8) {
-                        Button {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            withAnimation(ProMotionSpring.pop) {
-                                sessionEngine.togglePlayPause()
-                            }
-                        } label: {
-                            Image(systemName: sessionEngine.isTrackingDeepWork ? "pause.fill" : "play.fill")
-                                .font(.system(size: 22, weight: .bold))
-                                .foregroundStyle(Color.black)
-                                .frame(width: 68, height: 68)
-                                .background(ringAccent, in: Circle())
-                                .shadow(color: ringAccent.opacity(0.40), radius: 14)
-                        }
-                        .buttonStyle(MidnightPressButtonStyle())
-                        Text(sessionEngine.isTrackingDeepWork ? "Pause" : (sessionEngine.hasLiveSession ? "Resume" : "Start"))
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.84))
-                    }
-
-                    VStack(spacing: 8) {
-                        FrostedCircleButton(icon: "camera.fill", size: 54, tint: DailyOSTheme.solarAccent) {
-                            let title = sessionEngine.sessionTitle
-                            let cue = sessionEngine.editableCue
-                            sessionEngine.shouldPresentTimerSheet = false
-                            dismiss()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                if let active = focusManager.activeFocusBlock {
-                                    focusManager.openVoluntaryProofCapture(for: active)
-                                } else {
-                                    focusManager.activateFocusTaskAlarm(
-                                        taskID: "deep_work_proof_\(Int(Date().timeIntervalSince1970))",
-                                        taskTitle: title,
-                                        taskNotes: cue.isEmpty ? "Deep work photo proof" : cue,
-                                        taskSource: "Deep Work",
-                                        evasionPenalty: false
-                                    )
+                            VStack(spacing: 8) {
+                                Button {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                    withAnimation(ProMotionSpring.pop) {
+                                        sessionEngine.togglePlayPause()
+                                    }
+                                } label: {
+                                    Image(systemName: sessionEngine.isTrackingDeepWork ? "pause.fill" : "play.fill")
+                                        .font(.system(size: 22, weight: .bold))
+                                        .foregroundStyle(Color.black)
+                                        .frame(width: 68, height: 68)
+                                        .background(ringAccent, in: Circle())
+                                        .shadow(color: ringAccent.opacity(0.40), radius: 14)
                                 }
+                                .buttonStyle(MidnightPressButtonStyle())
+                                Text(sessionEngine.isTrackingDeepWork ? "Pause" : (sessionEngine.hasLiveSession ? "Resume" : "Start"))
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.white.opacity(0.84))
+                            }
+
+                            VStack(spacing: 8) {
+                                FrostedCircleButton(icon: "camera.fill", size: 54, tint: DailyOSTheme.solarAccent) {
+                                    let title = sessionEngine.sessionTitle
+                                    let cue = sessionEngine.editableCue
+                                    sessionEngine.shouldPresentTimerSheet = false
+                                    dismiss()
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                        if let active = focusManager.activeFocusBlock {
+                                            focusManager.openVoluntaryProofCapture(for: active)
+                                        } else {
+                                            focusManager.activateFocusTaskAlarm(
+                                                taskID: "deep_work_proof_\(Int(Date().timeIntervalSince1970))",
+                                                taskTitle: title,
+                                                taskNotes: cue.isEmpty ? "Deep work photo proof" : cue,
+                                                taskSource: "Deep Work",
+                                                evasionPenalty: false
+                                            )
+                                        }
+                                    }
+                                }
+                                Text("Proof")
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.eyebrow)
                             }
                         }
-                        Text("Proof")
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.eyebrow)
                     }
+                    .padding(.bottom, 36)
                 }
-                .padding(.bottom, 40)
             }
         }
         .preferredColorScheme(.dark)
+        .animation(ProMotionSpring.glide, value: sessionEngine.completionOverlay)
     }
 }
 

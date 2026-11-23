@@ -16,7 +16,8 @@ final class FocusLiveActivityManager {
         taskTitle: String,
         focusCue: String,
         accentHex: String = "#60A5FA",
-        durationSeconds: Int
+        durationSeconds: Int,
+        elapsedSeconds: Int = 0
     ) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
 
@@ -24,17 +25,24 @@ final class FocusLiveActivityManager {
         endAll()
 
         let now = Date()
-        let end = now.addingTimeInterval(TimeInterval(max(60, durationSeconds)))
+        let safeTotal = max(60, durationSeconds)
+        let safeElapsed = max(0, min(safeTotal, elapsedSeconds))
+        let start = now.addingTimeInterval(TimeInterval(-safeElapsed))
+        let end = start.addingTimeInterval(TimeInterval(safeTotal))
+        let rem = max(0, safeTotal - safeElapsed)
+        let label = FocusElapsedTimeFormatter.formatElapsedOfTotal(elapsedSeconds: safeElapsed, totalSeconds: safeTotal)
+
         let attributes = FocusActivityAttributes(
             taskTitle: taskTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Deep Work" : taskTitle,
             focusCue: focusCue.trimmingCharacters(in: .whitespacesAndNewlines),
             accentHex: accentHex
         )
         let state = FocusActivityAttributes.ContentState(
-            startDate: now,
+            startDate: start,
             endDate: end,
             isPaused: false,
-            remainingSecondsWhenPaused: max(60, durationSeconds)
+            remainingSecondsWhenPaused: rem,
+            elapsedOfTotalText: label
         )
 
         do {
@@ -49,21 +57,32 @@ final class FocusLiveActivityManager {
         }
     }
 
-    func update(isPaused: Bool, remainingSeconds: Int, totalDurationSeconds: Int) {
+    func update(
+        isPaused: Bool,
+        remainingSeconds: Int,
+        totalDurationSeconds: Int,
+        elapsedOfTotalText: String? = nil
+    ) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         guard let activity = currentActivity ?? Activity<FocusActivityAttributes>.activities.first else { return }
 
         let now = Date()
-        let clampedRem = max(0, remainingSeconds)
-        let elapsed = max(0, totalDurationSeconds - clampedRem)
+        let safeTotal = max(60, totalDurationSeconds)
+        let clampedRem = max(0, min(safeTotal, remainingSeconds))
+        let elapsed = max(0, safeTotal - clampedRem)
         let reconstructedStart = now.addingTimeInterval(TimeInterval(-elapsed))
         let newEnd = now.addingTimeInterval(TimeInterval(clampedRem))
+        let label = elapsedOfTotalText ?? FocusElapsedTimeFormatter.formatElapsedOfTotal(
+            elapsedSeconds: elapsed,
+            totalSeconds: safeTotal
+        )
 
         let state = FocusActivityAttributes.ContentState(
             startDate: reconstructedStart,
             endDate: newEnd,
             isPaused: isPaused,
-            remainingSecondsWhenPaused: clampedRem
+            remainingSecondsWhenPaused: clampedRem,
+            elapsedOfTotalText: label
         )
         let content = ActivityContent(state: state, staleDate: newEnd.addingTimeInterval(60))
 
@@ -81,7 +100,8 @@ final class FocusLiveActivityManager {
             startDate: Date(),
             endDate: Date(),
             isPaused: false,
-            remainingSecondsWhenPaused: 0
+            remainingSecondsWhenPaused: 0,
+            elapsedOfTotalText: nil
         )
         let finalContent = ActivityContent(state: finalState, staleDate: nil)
 

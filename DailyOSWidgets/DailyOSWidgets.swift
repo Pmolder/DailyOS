@@ -41,7 +41,7 @@ struct DailyCheckInProvider: TimelineProvider {
         WidgetSnapshot(
             updatedAt: Date(),
             todayKey: WidgetBridge.todayDateKey(),
-            todayScore: 78,
+            todayScore: 80,
             scoreHeadline: "Dialed in.",
             globalStreak: 17,
             streakFreezes: 1,
@@ -49,7 +49,13 @@ struct DailyCheckInProvider: TimelineProvider {
                 WidgetHabitItem(id: "sample-1", name: "Meditate", iconName: "figure.mind.and.body", colorHex: "#34D399", kind: "build", trackingMode: "binary", dailyTarget: 1, todayValue: 1, streak: 12, last7Days: [1, 1, 1, 0, 1, 1, 1], currentMonthDays: [:]),
                 WidgetHabitItem(id: "sample-2", name: "Read", iconName: "book.fill", colorHex: "#A78BFA", kind: "build", trackingMode: "quantity", dailyTarget: 20, todayValue: 12, streak: 9, last7Days: [1, 1, 0, 1, 0, 1, 0.6], currentMonthDays: [:]),
                 WidgetHabitItem(id: "sample-3", name: "Drink Water", iconName: "drop.fill", colorHex: "#38BDF8", kind: "build", trackingMode: "binary", dailyTarget: 1, todayValue: 0, streak: 5, last7Days: [1, 1, 1, 1, 1, 0, 0], currentMonthDays: [:])
-            ]
+            ],
+            habitsPercent: 80,
+            habitsDone: 4,
+            habitsTotal: 5,
+            todoPercent: 50,
+            todoDone: 2,
+            todoTotal: 4
         )
     }
 }
@@ -402,55 +408,76 @@ struct TodayScoreProvider: TimelineProvider {
 struct TodayScoreWidgetView: View {
     let entry: TodayScoreEntry
 
-    private var progress: Double {
-        Double(max(0, min(100, entry.snapshot.todayScore))) / 100.0
+    private var habitsProgress: Double {
+        Double(max(0, min(100, entry.snapshot.habitsPercent))) / 100.0
+    }
+
+    private var habitsRingColor: Color {
+        entry.snapshot.habitsPercent >= 75 ? Color.dailyHex("#34D399") : Color.dailyHex("#8B7CFF")
     }
 
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 7) {
             ZStack {
                 Circle()
-                    .stroke(Color.white.opacity(0.08), lineWidth: 9)
-                    .frame(width: 82, height: 82)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 8.5)
+                    .frame(width: 78, height: 78)
 
                 Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(WidgetPalette.skyGlow, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    .trim(from: 0, to: habitsProgress)
+                    .stroke(habitsRingColor, style: StrokeStyle(lineWidth: 8.5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .frame(width: 82, height: 82)
+                    .frame(width: 78, height: 78)
                     .blur(radius: 5)
                     .opacity(0.45)
 
                 Circle()
-                    .trim(from: 0, to: progress)
-                    .stroke(WidgetPalette.skyGlow, style: StrokeStyle(lineWidth: 9, lineCap: .round))
+                    .trim(from: 0, to: habitsProgress)
+                    .stroke(habitsRingColor, style: StrokeStyle(lineWidth: 8.5, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .frame(width: 82, height: 82)
+                    .frame(width: 78, height: 78)
 
-                Text("\(entry.snapshot.todayScore)")
-                    .font(.system(size: 26, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.white)
+                VStack(spacing: 0) {
+                    Text("\(entry.snapshot.habitsPercent)%")
+                        .font(.system(size: 20, weight: .black, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.white)
+                    Text("\(entry.snapshot.habitsDone)/\(entry.snapshot.habitsTotal)")
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(habitsRingColor)
+                }
             }
 
-            Text(entry.snapshot.scoreHeadline)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(Color.white.opacity(0.9))
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                HStack(spacing: 3) {
+                    Image(systemName: "checklist")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(WidgetPalette.skyGlow)
+                    Text("To-Do \(entry.snapshot.todoDone)/\(entry.snapshot.todoTotal)")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.white.opacity(0.9))
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(WidgetPalette.card, in: Capsule())
+                .overlay(Capsule().stroke(WidgetPalette.hairline, lineWidth: 1))
 
-            HStack(spacing: 4) {
-                Image(systemName: "flame.fill")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(WidgetPalette.flameOrange)
-                Text("\(entry.snapshot.globalStreak)d")
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.white)
+                HStack(spacing: 3) {
+                    Image(systemName: "flame.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(WidgetPalette.flameOrange)
+                    Text("\(entry.snapshot.globalStreak)d")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.white)
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 3)
+                .background(WidgetPalette.card, in: Capsule())
+                .overlay(Capsule().stroke(WidgetPalette.hairline, lineWidth: 1))
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 3)
-            .background(WidgetPalette.card, in: Capsule())
-            .overlay(Capsule().stroke(WidgetPalette.hairline, lineWidth: 1))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .containerBackground(WidgetPalette.canvas, for: .widget)

@@ -42,6 +42,64 @@ struct WidgetSnapshot: Codable {
     var globalStreak: Int
     var streakFreezes: Int
     var habits: [WidgetHabitItem]
+    var habitsPercent: Int
+    var habitsDone: Int
+    var habitsTotal: Int
+    var todoPercent: Int
+    var todoDone: Int
+    var todoTotal: Int
+
+    init(
+        updatedAt: Date,
+        todayKey: String,
+        todayScore: Int,
+        scoreHeadline: String,
+        globalStreak: Int,
+        streakFreezes: Int,
+        habits: [WidgetHabitItem],
+        habitsPercent: Int? = nil,
+        habitsDone: Int? = nil,
+        habitsTotal: Int? = nil,
+        todoPercent: Int = 0,
+        todoDone: Int = 0,
+        todoTotal: Int = 0
+    ) {
+        self.updatedAt = updatedAt
+        self.todayKey = todayKey
+        self.todayScore = todayScore
+        self.scoreHeadline = scoreHeadline
+        self.globalStreak = globalStreak
+        self.streakFreezes = streakFreezes
+        self.habits = habits
+        self.habitsPercent = habitsPercent ?? todayScore
+        self.habitsDone = habitsDone ?? habits.filter(\.isCompletedToday).count
+        self.habitsTotal = habitsTotal ?? habits.count
+        self.todoPercent = todoPercent
+        self.todoDone = todoDone
+        self.todoTotal = todoTotal
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case updatedAt, todayKey, todayScore, scoreHeadline, globalStreak, streakFreezes, habits
+        case habitsPercent, habitsDone, habitsTotal, todoPercent, todoDone, todoTotal
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt) ?? Date()
+        todayKey = try c.decodeIfPresent(String.self, forKey: .todayKey) ?? WidgetBridge.todayDateKey()
+        todayScore = try c.decodeIfPresent(Int.self, forKey: .todayScore) ?? 0
+        scoreHeadline = try c.decodeIfPresent(String.self, forKey: .scoreHeadline) ?? "Let's start."
+        globalStreak = try c.decodeIfPresent(Int.self, forKey: .globalStreak) ?? 0
+        streakFreezes = try c.decodeIfPresent(Int.self, forKey: .streakFreezes) ?? 1
+        habits = try c.decodeIfPresent([WidgetHabitItem].self, forKey: .habits) ?? []
+        habitsPercent = try c.decodeIfPresent(Int.self, forKey: .habitsPercent) ?? todayScore
+        habitsDone = try c.decodeIfPresent(Int.self, forKey: .habitsDone) ?? habits.filter(\.isCompletedToday).count
+        habitsTotal = try c.decodeIfPresent(Int.self, forKey: .habitsTotal) ?? habits.count
+        todoPercent = try c.decodeIfPresent(Int.self, forKey: .todoPercent) ?? 0
+        todoDone = try c.decodeIfPresent(Int.self, forKey: .todoDone) ?? 0
+        todoTotal = try c.decodeIfPresent(Int.self, forKey: .todoTotal) ?? 0
+    }
 
     static func empty(todayKey: String = WidgetBridge.todayDateKey()) -> WidgetSnapshot {
         WidgetSnapshot(
@@ -51,7 +109,13 @@ struct WidgetSnapshot: Codable {
             scoreHeadline: "Let's start.",
             globalStreak: 0,
             streakFreezes: 1,
-            habits: []
+            habits: [],
+            habitsPercent: 0,
+            habitsDone: 0,
+            habitsTotal: 0,
+            todoPercent: 0,
+            todoDone: 0,
+            todoTotal: 0
         )
     }
 }
@@ -209,11 +273,14 @@ enum WidgetBridge {
         snapshot.todayKey = todayKey
         snapshot.updatedAt = Date()
 
-        // Recompute Today's Score optimistically
+        // Recompute pure Habits-only score optimistically
         if !snapshot.habits.isEmpty {
             let avg = snapshot.habits.reduce(0.0) { $0 + $1.todayProgressRatio } / Double(snapshot.habits.count)
             let computed = max(0, min(100, Int(round(avg * 100.0))))
             snapshot.todayScore = computed
+            snapshot.habitsPercent = computed
+            snapshot.habitsDone = snapshot.habits.filter(\.isCompletedToday).count
+            snapshot.habitsTotal = snapshot.habits.count
             switch computed {
             case 90...100: snapshot.scoreHeadline = "Locked in."
             case 70...89: snapshot.scoreHeadline = "Dialed in."

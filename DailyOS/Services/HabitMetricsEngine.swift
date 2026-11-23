@@ -15,11 +15,28 @@ struct GlobalStreakSummary {
     let usedFreezeRecently: Bool
 }
 
-struct TodayScoreSummary {
-    let score: Int // 0...100
+struct HabitsCompletionScore {
+    let percent: Int // 0...100 (100% pure active Habits only)
+    let completedCount: Int
+    let totalCount: Int
     let headline: String
+}
+
+struct TodoCompletionScore {
+    let percent: Int // 0...100 (100% pure Focus To-Do + Calendar events only)
+    let completedCount: Int
+    let totalCount: Int
+}
+
+struct TodayScoreSummary {
+    let score: Int // Pure Habits % (0...100)
+    let headline: String
+    let habitsPercent: Int
     let habitsCompleted: Int
     let habitsTotal: Int
+    let todoPercent: Int
+    let todoCompleted: Int
+    let todoTotal: Int
     let focusMinutesToday: Int
     let globalStreak: Int
     let wakeCompletedToday: Bool
@@ -415,6 +432,63 @@ enum HabitMetricsEngine {
         )
     }
 
+    // MARK: - Pure Separate Calculators: Habits-Only Ring & To-Do-Only Ring
+
+    /// Pure Habits-Only Progress Calculator (zero mixing with To-Do tasks, Focus minutes, or Wake alarms).
+    static func habitsCompletionScore(
+        habits: [HabitItem],
+        allLogs: [HabitLog],
+        on date: Date = Date()
+    ) -> HabitsCompletionScore {
+        let activeHabits = habits.filter { !$0.isArchived }
+        let scheduled = activeHabits.filter { $0.isScheduled(on: date) }
+
+        var ratioSum = 0.0
+        var completedCount = 0
+
+        for habit in scheduled {
+            let map = logsByDayKey(for: habit.id, allLogs: allLogs)
+            let ratio = progressRatio(for: habit, on: date, logMap: map)
+            ratioSum += ratio
+            if ratio >= 1.0 {
+                completedCount += 1
+            }
+        }
+
+        let total = scheduled.count
+        let percent = total == 0 ? 0 : max(0, min(100, Int(round((ratioSum / Double(total)) * 100.0))))
+        let headline: String
+        switch percent {
+        case 90...100: headline = "Locked in."
+        case 70...89: headline = "Dialed in."
+        case 40...69: headline = "Building momentum."
+        default: headline = "Let's start."
+        }
+
+        return HabitsCompletionScore(
+            percent: percent,
+            completedCount: completedCount,
+            totalCount: total,
+            headline: headline
+        )
+    }
+
+    /// Pure To-Do / Focus Progress Calculator (strictly Focus To-Do tasks + imported Google/Apple Calendar events).
+    static func todoCompletionScore(
+        focusTasks: [FocusTaskItem],
+        completedCalendarEventsCount: Int = 0,
+        totalCalendarEventsCount: Int = 0
+    ) -> TodoCompletionScore {
+        let completedTasks = focusTasks.filter(\.isCompleted).count + max(0, completedCalendarEventsCount)
+        let totalTasks = focusTasks.count + max(completedCalendarEventsCount, totalCalendarEventsCount)
+        let percent = totalTasks == 0 ? 0 : max(0, min(100, Int(round((Double(completedTasks) / Double(totalTasks)) * 100.0))))
+        return TodoCompletionScore(
+            percent: percent,
+            completedCount: completedTasks,
+            totalCount: totalTasks
+        )
+    }
+
     static func todayScoreSummary(
         habits: [HabitItem],
         allLogs: [HabitLog],
@@ -422,57 +496,25 @@ enum HabitMetricsEngine {
         completedCalendarEventsCount: Int = 0,
         totalCalendarEventsCount: Int = 0
     ) -> TodayScoreSummary {
-        let activeHabits = habits.filter { !$0.isArchived }
-        let today = Date()
-        let scheduledToday = activeHabits.filter { $0.isScheduled(on: today) }
-
-        var habitScoreSum = 0.0
-        var completedCount = 0
-
-        for h in scheduledToday {
-            let map = logsByDayKey(for: h.id, allLogs: allLogs)
-            let ratio = progressRatio(for: h, on: today, logMap: map)
-            habitScoreSum += ratio
-            if ratio >= 1.0 {
-                completedCount += 1
-            }
-        }
-
-        let completedTasks = todayTasks.filter(\.isCompleted).count + max(0, completedCalendarEventsCount)
-        let totalItems = scheduledToday.count + todayTasks.count + max(completedCalendarEventsCount, totalCalendarEventsCount)
-        let combinedScoreSum = habitScoreSum + Double(completedTasks)
-        let combinedRatio = totalItems == 0 ? 0.0 : (combinedScoreSum / Double(totalItems))
+        let habitsScore = habitsCompletionScore(habits: habits, allLogs: allLogs, on: Date())
+        let todoScore = todoCompletionScore(
+            focusTasks: todayTasks,
+            completedCalendarEventsCount: completedCalendarEventsCount,
+            totalCalendarEventsCount: totalCalendarEventsCount
+        )
         let focusMins = focusMinutesToday
         let wakeDone = isWakeCompletedToday
-
-        // Weight: 75% habits+tasks + 15% focus (up to 60m) + 10% wake completion
-        let rawScore: Double
-        if totalItems == 0 {
-            let focusBoost = min(1.0, Double(focusMins) / 60.0) * 60.0
-            let wakeBoost = wakeDone ? 40.0 : 0.0
-            rawScore = focusBoost + wakeBoost
-        } else {
-            let focusBoost = min(1.0, Double(focusMins) / 60.0) * 15.0
-            let wakeBoost = wakeDone ? 10.0 : 0.0
-            rawScore = (combinedRatio * 75.0) + focusBoost + wakeBoost
-        }
-
-        let score = max(0, min(100, Int(round(rawScore))))
-        let headline: String
-        switch score {
-        case 90...100: headline = "Locked in."
-        case 70...89: headline = "Dialed in."
-        case 40...69: headline = "Building momentum."
-        default: headline = "Let's start."
-        }
-
         let streakInfo = globalStreakSummary(habits: habits, allLogs: allLogs)
 
         return TodayScoreSummary(
-            score: score,
-            headline: headline,
-            habitsCompleted: completedCount,
-            habitsTotal: scheduledToday.count,
+            score: habitsScore.percent,
+            headline: habitsScore.headline,
+            habitsPercent: habitsScore.percent,
+            habitsCompleted: habitsScore.completedCount,
+            habitsTotal: habitsScore.totalCount,
+            todoPercent: todoScore.percent,
+            todoCompleted: todoScore.completedCount,
+            todoTotal: todoScore.totalCount,
             focusMinutesToday: focusMins,
             globalStreak: streakInfo.currentStreak,
             wakeCompletedToday: wakeDone

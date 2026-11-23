@@ -25,7 +25,11 @@ struct ContentView: View {
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            HabitsListView()
+            HabitsListView(onOpenFocusTab: {
+                withAnimation(ProMotionSpring.glide) {
+                    selectedTab = 2
+                }
+            })
                 .id("habits_\(dayRolloverToken.uuidString)")
                 .tabItem {
                     Label("Habits", systemImage: "square.grid.3x3.fill")

@@ -109,11 +109,17 @@ enum WidgetSyncCoordinator {
         let snapshot = WidgetSnapshot(
             updatedAt: Date(),
             todayKey: todayKey,
-            todayScore: score.score,
+            todayScore: score.habitsPercent,
             scoreHeadline: score.headline,
             globalStreak: globalStreak.currentStreak,
             streakFreezes: globalStreak.freezesRemaining,
-            habits: widgetHabits
+            habits: widgetHabits,
+            habitsPercent: score.habitsPercent,
+            habitsDone: score.habitsCompleted,
+            habitsTotal: score.habitsTotal,
+            todoPercent: score.todoPercent,
+            todoDone: score.todoCompleted,
+            todoTotal: score.todoTotal
         )
 
         WidgetBridge.saveSnapshot(snapshot)

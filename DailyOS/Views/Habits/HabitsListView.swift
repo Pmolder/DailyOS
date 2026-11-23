@@ -4,6 +4,8 @@ import UniformTypeIdentifiers
 
 /// "Every habit. One glance." — Rebuilt Habits Tab matching the Midnight Obsidian & Ambient Glow design language.
 struct HabitsListView: View {
+    var onOpenFocusTab: () -> Void = {}
+
     @Environment(\.modelContext) private var modelContext
     @Query(
         sort: [
@@ -24,6 +26,7 @@ struct HabitsListView: View {
 
     @Query private var allRoutineLogs: [RoutineChecklistLog]
     @Query private var allFocusTasks: [FocusTaskItem]
+    @Query private var allAlarms: [AlarmItem]
 
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
     @ObservedObject private var calendarCompletions = CalendarEventCompletionStore.shared
@@ -37,10 +40,12 @@ struct HabitsListView: View {
     @State private var activeRoutineSheet: RoutineType? = nil
     @State private var quantityAdjustHabit: HabitItem?
 
-    // Drag-and-drop & Reorder Mode State
+    // Drag-and-drop, Reorder Mode & Spotlight Celebration State
     @State private var draggingHabitID: UUID? = nil
     @State private var isReorderMode: Bool = false
     @State private var primePulse: Bool = false
+    @State private var spotlightShimmerTrigger: Int = 0
+    @State private var routineBurstTrigger: [UUID: Int] = [:]
 
     private var activeHabits: [HabitItem] {
         allHabits.filter { !$0.isArchived }
@@ -54,10 +59,95 @@ struct HabitsListView: View {
         Set(allRoutineLogs.filter { $0.dayKey == todayKey }.map(\.itemID))
     }
 
+    private func routineItems(for type: RoutineType) -> [RoutineChecklistItem] {
+        allRoutineItems.filter { $0.routineType == type }
+    }
+
     private func routineCounts(for type: RoutineType) -> (completed: Int, total: Int) {
-        let items = allRoutineItems.filter { $0.routineType == type }
+        let items = routineItems(for: type)
         let done = items.filter { todayCompletedRoutineIDs.contains($0.id) }.count
         return (done, items.count)
+    }
+
+    // MARK: - Time-Aware Dynamic Morning & Night Spotlight Windows
+
+    private var isInMorningWindow: Bool {
+        let hour = ISOWeekCalendar.current.component(.hour, from: Date())
+        return (5..<12).contains(hour) || (HabitMetricsEngine.isWakeCompletedToday && hour < 15)
+    }
+
+    private var nextEnabledAlarm: AlarmItem? {
+        let now = Date()
+        return allAlarms
+            .filter(\.isEnabled)
+            .compactMap { alarm -> (alarm: AlarmItem, date: Date)? in
+                guard let next = alarm.nextTriggerDate(after: now) else { return nil }
+                return (alarm, next)
+            }
+            .min(by: { $0.date < $1.date })?
+            .alarm
+    }
+
+    private var nightBedtimeTargetLabel: String? {
+        guard let alarm = nextEnabledAlarm else { return nil }
+        let bed = alarm.bedtimeSchedule()
+        return "Lights out \(bed.lightsOutText) • \(alarm.sleepCycleCount) cycles"
+    }
+
+    private var isInNightWindow: Bool {
+        let cal = ISOWeekCalendar.current
+        let now = Date()
+        let nowMins = cal.component(.hour, from: now) * 60 + cal.component(.minute, from: now)
+
+        if let alarm = nextEnabledAlarm {
+            let bed = alarm.bedtimeSchedule()
+            let windDownMins = bed.windDownHour * 60 + bed.windDownMinute
+            let triggerStart = (windDownMins - 45 + 1440) % 1440
+            // Active from 45m before wind-down through 03:00 AM
+            if triggerStart >= 180 {
+                return nowMins >= triggerStart || nowMins < 180
+            } else {
+                return nowMins >= triggerStart && nowMins < 180
+            }
+        }
+        // Fallback window when no alarm is enabled: 20:30 – 03:00
+        return nowMins >= (20 * 60 + 30) || nowMins < 180
+    }
+
+    private var isMorningSpotlightActive: Bool {
+        let counts = routineCounts(for: .morning)
+        return isInMorningWindow && counts.total > 0 && counts.completed < counts.total
+    }
+
+    private var isNightSpotlightActive: Bool {
+        let counts = routineCounts(for: .night)
+        return isInNightWindow && counts.total > 0 && counts.completed < counts.total
+    }
+
+    private func spotlightAccent(for habit: HabitItem, logMap: [String: HabitLog]) -> Color? {
+        guard !HabitMetricsEngine.isDayComplete(for: habit, on: Date(), logMap: logMap) else {
+            return nil
+        }
+        if habit.timeOfDay == .morning && isInMorningWindow {
+            return DailyOSTheme.solarAccent
+        }
+        if habit.timeOfDay == .night && isInNightWindow {
+            return DailyOSTheme.indigoGlow
+        }
+        return nil
+    }
+
+    private var displayedHabits: [HabitItem] {
+        if isReorderMode { return activeHabits }
+        return activeHabits.sorted { lhs, rhs in
+            let lMap = HabitMetricsEngine.logsByDayKey(for: lhs.id, allLogs: allLogs)
+            let rMap = HabitMetricsEngine.logsByDayKey(for: rhs.id, allLogs: allLogs)
+            let lSpot = spotlightAccent(for: lhs, logMap: lMap) != nil
+            let rSpot = spotlightAccent(for: rhs, logMap: rMap) != nil
+            if lSpot != rSpot { return lSpot }
+            if lhs.sortOrder != rhs.sortOrder { return lhs.sortOrder < rhs.sortOrder }
+            return lhs.createdAt < rhs.createdAt
+        }
     }
 
     private var todayScore: TodayScoreSummary {
@@ -167,14 +257,15 @@ struct HabitsListView: View {
                         }
                         .padding(.top, 6)
 
-                        // 2. Collapsible "Today's Score" Hero Card
+                        // 2. Collapsible Dual-Ring "Today's Overview" Hero Card (Pure Habits + Separate To-Do Ring)
                         TodayScoreHeroCard(
                             summary: todayScore,
-                            isExpanded: $isScoreCardExpanded
+                            isExpanded: $isScoreCardExpanded,
+                            onTapTodoRing: onOpenFocusTab
                         )
 
-                        // 2b. Sun ☀️ & Moon 🌙 Morning & Night Routine Progress-Ring Bar
-                        routineRingsBar
+                        // 2b. Time-Aware Dynamic Morning / Night Spotlight Hero Card + Compact Sun/Moon Bar
+                        dynamicRoutinesSection
 
                         // 3. Scrollable Habit Cards Feed (Clean Empty State on Fresh Install)
                         if activeHabits.isEmpty {
@@ -208,9 +299,10 @@ struct HabitsListView: View {
                             .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.06)
                         } else {
                             LazyVStack(spacing: 14) {
-                                ForEach(Array(activeHabits.enumerated()), id: \.element.id) { index, habit in
+                                ForEach(Array(displayedHabits.enumerated()), id: \.element.id) { index, habit in
                                     let logMap = HabitMetricsEngine.logsByDayKey(for: habit.id, allLogs: allLogs)
                                     let isBeingDragged = draggingHabitID == habit.id
+                                    let spotColor = spotlightAccent(for: habit, logMap: logMap)
 
                                     HStack(spacing: 10) {
                                         if isReorderMode {
@@ -236,12 +328,12 @@ struct HabitsListView: View {
                                                 } label: {
                                                     Image(systemName: "chevron.down")
                                                         .font(.system(size: 12, weight: .bold))
-                                                        .foregroundStyle(index == activeHabits.count - 1 ? DailyOSTheme.eyebrow.opacity(0.35) : Color.white)
+                                                        .foregroundStyle(index == displayedHabits.count - 1 ? DailyOSTheme.eyebrow.opacity(0.35) : Color.white)
                                                         .frame(width: 30, height: 30)
                                                         .background(DailyOSTheme.buttonSurface, in: Circle())
                                                 }
                                                 .buttonStyle(.plain)
-                                                .disabled(index == activeHabits.count - 1)
+                                                .disabled(index == displayedHabits.count - 1)
                                             }
                                         }
 
@@ -251,8 +343,11 @@ struct HabitsListView: View {
                                             HabitFeedCardView(
                                                 habit: habit,
                                                 logMap: logMap,
+                                                spotlightAccent: spotColor,
                                                 onQuickCheckIn: {
-                                                    handleQuickCheckIn(habit, logMap: logMap)
+                                                    withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) {
+                                                        handleQuickCheckIn(habit, logMap: logMap)
+                                                    }
                                                 },
                                                 onLongPressQuantity: {
                                                     quantityAdjustHabit = habit
@@ -352,13 +447,173 @@ struct HabitsListView: View {
         Task { await notificationScheduler.rescheduleAll() }
     }
 
-    // MARK: - Sun & Moon Routine Progress-Ring Strip
+    // MARK: - Time-Aware Dynamic Morning / Night Spotlight Hero + Compact Sun & Moon Bar
 
-    private var routineRingsBar: some View {
-        HStack(spacing: 12) {
-            routineRingPill(type: .morning)
-            routineRingPill(type: .night)
+    private var dynamicRoutinesSection: some View {
+        VStack(spacing: 12) {
+            if isMorningSpotlightActive {
+                routineSpotlightHeroCard(type: .morning, bedtimeTarget: nil)
+                    .transition(.asymmetric(
+                        insertion: .scale(scale: 0.94).combined(with: .opacity),
+                        removal: .scale(scale: 0.90).combined(with: .opacity)
+                    ))
+            } else if isNightSpotlightActive {
+                routineSpotlightHeroCard(type: .night, bedtimeTarget: nightBedtimeTargetLabel)
+                    .transition(.asymmetric(
+                        insertion: .scale(scale: 0.94).combined(with: .opacity),
+                        removal: .scale(scale: 0.90).combined(with: .opacity)
+                    ))
+            }
+
+            HStack(spacing: 12) {
+                if !isMorningSpotlightActive {
+                    routineRingPill(type: .morning)
+                }
+                if !isNightSpotlightActive {
+                    routineRingPill(type: .night)
+                }
+            }
         }
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: isMorningSpotlightActive)
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: isNightSpotlightActive)
+    }
+
+    private func routineSpotlightHeroCard(type: RoutineType, bedtimeTarget: String?) -> some View {
+        let items = routineItems(for: type)
+        let counts = routineCounts(for: type)
+        let remainingItems = items.filter { !todayCompletedRoutineIDs.contains($0.id) }
+        let ratio = counts.total > 0 ? Double(counts.completed) / Double(counts.total) : 0.0
+        let accent = type.accentColor
+
+        return VStack(alignment: .leading, spacing: 14) {
+            // Header (tap to open full RoutineChecklistSheet)
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                activeRoutineSheet = type
+            } label: {
+                HStack(spacing: 12) {
+                    ZStack {
+                        OrganicBreathingAura(color: accent, diameter: 62)
+                        Circle()
+                            .fill(accent.opacity(0.20))
+                            .frame(width: 48, height: 48)
+                            .overlay(Circle().stroke(accent.opacity(0.55), lineWidth: 1.5))
+                        Image(systemName: type.iconName)
+                            .font(.system(size: 21, weight: .bold))
+                            .symbolEffect(.bounce, value: counts.completed)
+                            .foregroundStyle(accent)
+                    }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 6) {
+                            Text(type == .morning ? "MORNING SPOTLIGHT" : "NIGHT SPOTLIGHT")
+                                .font(.system(size: 10, weight: .black, design: .rounded))
+                                .tracking(1.1)
+                                .foregroundStyle(accent)
+
+                            if let bedtimeTarget {
+                                Text("• \(bedtimeTarget)")
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(Color.white.opacity(0.75))
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        Text("\(type.title) • \(counts.completed) / \(counts.total)")
+                            .font(.system(size: 18, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                            .foregroundStyle(Color.white)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(accent)
+                        .frame(width: 28, height: 28)
+                        .background(accent.opacity(0.14), in: Circle())
+                }
+            }
+            .buttonStyle(.plain)
+
+            // Live Progress Bar
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.white.opacity(0.08))
+                        .frame(height: 6)
+                    Capsule()
+                        .fill(accent)
+                        .frame(width: max(8, geo.size.width * ratio), height: 6)
+                        .shadow(color: accent.opacity(0.55), radius: 6)
+                        .animation(ProMotionSpring.ringFill, value: ratio)
+                }
+            }
+            .frame(height: 6)
+
+            // Inline 1-Tap Checkable Preview Rows for Remaining Steps
+            VStack(spacing: 8) {
+                ForEach(remainingItems.prefix(4)) { item in
+                    let burst = routineBurstTrigger[item.id] ?? 0
+                    let isChargerStep = type == .night && (item.title.lowercased().contains("charger") || item.title.lowercased().contains("phone"))
+
+                    HStack(spacing: 11) {
+                        Button {
+                            routineBurstTrigger[item.id] = burst + 1
+                            let becameDone = SharedModelContainer.shared.toggleRoutineLog(itemID: item.id, dayKey: todayKey)
+                            if becameDone {
+                                let newCounts = routineCounts(for: type)
+                                if newCounts.completed >= newCounts.total {
+                                    spotlightShimmerTrigger += 1
+                                }
+                                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            } else {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            }
+                        } label: {
+                            ZStack {
+                                CompletionBurstView(trigger: burst, color: accent, size: 42)
+                                Circle()
+                                    .stroke(accent.opacity(0.75), lineWidth: 2)
+                                    .frame(width: 24, height: 24)
+                            }
+                        }
+                        .buttonStyle(MidnightPressButtonStyle())
+
+                        Text(item.title)
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.white)
+                            .lineLimit(1)
+
+                        Spacer(minLength: 4)
+
+                        if isChargerStep {
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                activeRoutineSheet = .night
+                            } label: {
+                                Label("Dock", systemImage: "camera.fill")
+                                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                                    .foregroundStyle(accent)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(accent.opacity(0.16), in: Capsule())
+                            }
+                            .buttonStyle(MidnightPressButtonStyle())
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(DailyOSTheme.canvas.opacity(0.55), in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(accent.opacity(0.22), lineWidth: 1))
+                }
+            }
+        }
+        .padding(16)
+        .ambientCard(accent: accent, cornerRadius: 24, washOpacity: 0.16)
+        .midnightShimmer(trigger: spotlightShimmerTrigger, color: accent)
     }
 
     private func routineRingPill(type: RoutineType) -> some View {
@@ -497,50 +752,85 @@ private struct HabitReorderDropDelegate: DropDelegate {
     }
 }
 
-// MARK: - Collapsible "Today's Score" Hero Card
+// MARK: - Collapsible Dual-Ring "Today's Overview" Hero Card (Pure Habits + Separate To-Do Ring)
 
 private struct TodayScoreHeroCard: View {
     let summary: TodayScoreSummary
     @Binding var isExpanded: Bool
+    let onTapTodoRing: () -> Void
     @State private var score100Trigger: Int = 0
 
-    private var ringColor: Color {
-        switch summary.score {
-        case 75...100: return DailyOSTheme.skyGlow
-        case 45..<75: return Color(hex: "#38BDF8")
-        default: return Color(hex: "#818CF8")
+    private var habitsRingColor: Color {
+        switch summary.habitsPercent {
+        case 75...100: return DailyOSTheme.emerald
+        case 45..<75: return DailyOSTheme.indigoGlow
+        default: return DailyOSTheme.periwinkle
         }
+    }
+
+    private var todoRingColor: Color {
+        DailyOSTheme.skyGlow
     }
 
     var body: some View {
         VStack(spacing: isExpanded ? 16 : 0) {
             HStack {
                 if !isExpanded {
-                    HStack(spacing: 10) {
-                        ZStack {
-                            AmbientBloomRing(
-                                progress: Double(summary.score) / 100.0,
-                                color: ringColor,
-                                lineWidth: 4,
-                                diameter: 34
-                            )
-                            Text("\(summary.score)")
-                                .font(.system(size: 12, weight: .black, design: .rounded))
-                                .monospacedDigit()
-                                .contentTransition(.numericText())
-                                .animation(ProMotionSpring.ringFill, value: summary.score)
-                                .foregroundStyle(.white)
+                    HStack(spacing: 12) {
+                        HStack(spacing: 7) {
+                            ZStack {
+                                AmbientBloomRing(
+                                    progress: Double(summary.habitsPercent) / 100.0,
+                                    color: habitsRingColor,
+                                    lineWidth: 3.5,
+                                    diameter: 32
+                                )
+                                Text("\(summary.habitsPercent)")
+                                    .font(.system(size: 10, weight: .black, design: .rounded))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .animation(ProMotionSpring.ringFill, value: summary.habitsPercent)
+                                    .foregroundStyle(.white)
+                            }
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text("HABITS").eyebrowStyle()
+                                Text("\(summary.habitsCompleted)/\(summary.habitsTotal)")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(.white)
+                            }
                         }
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("TODAY'S SCORE").eyebrowStyle()
-                            Text(summary.headline)
-                                .font(.system(size: 14, weight: .bold, design: .rounded))
-                                .foregroundStyle(.white)
+
+                        Button(action: onTapTodoRing) {
+                            HStack(spacing: 7) {
+                                ZStack {
+                                    AmbientBloomRing(
+                                        progress: Double(summary.todoPercent) / 100.0,
+                                        color: todoRingColor,
+                                        lineWidth: 3.5,
+                                        diameter: 32
+                                    )
+                                    Text("\(summary.todoPercent)")
+                                        .font(.system(size: 10, weight: .black, design: .rounded))
+                                        .monospacedDigit()
+                                        .contentTransition(.numericText())
+                                        .animation(ProMotionSpring.ringFill, value: summary.todoPercent)
+                                        .foregroundStyle(.white)
+                                }
+                                VStack(alignment: .leading, spacing: 0) {
+                                    Text("TO-DO").eyebrowStyle()
+                                    Text("\(summary.todoCompleted)/\(summary.todoTotal)")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(todoRingColor)
+                                }
+                            }
                         }
+                        .buttonStyle(.plain)
                     }
                 } else {
                     Spacer()
-                    Text("TODAY'S SCORE").eyebrowStyle()
+                    Text("TODAY'S OVERVIEW").eyebrowStyle()
                     Spacer()
                 }
 
@@ -560,48 +850,101 @@ private struct TodayScoreHeroCard: View {
             }
 
             if isExpanded {
-                ZStack {
-                    OrganicBreathingAura(color: ringColor, diameter: 220)
-                    AmbientBloomRing(
-                        progress: Double(summary.score) / 100.0,
-                        color: ringColor,
-                        lineWidth: 14,
-                        diameter: 170
-                    )
+                // Dual Side-by-Side Glowing Progress Rings: Pure HABITS (Left) + Pure TO-DO (Right, taps to Focus)
+                HStack(spacing: 14) {
+                    // Left Primary Ring: Pure Habits-Only %
+                    VStack(spacing: 6) {
+                        ZStack {
+                            OrganicBreathingAura(color: habitsRingColor, diameter: 158)
+                            AmbientBloomRing(
+                                progress: Double(summary.habitsPercent) / 100.0,
+                                color: habitsRingColor,
+                                lineWidth: 12,
+                                diameter: 128
+                            )
 
-                    VStack(spacing: 2) {
-                        Text("\(summary.score)")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
-                            .monospacedDigit()
-                            .contentTransition(.numericText())
-                            .animation(ProMotionSpring.ringFill, value: summary.score)
-                            .foregroundStyle(.white)
-                        Text("/ 100")
-                            .font(.system(size: 15, weight: .medium, design: .rounded))
-                            .monospacedDigit()
+                            VStack(spacing: 1) {
+                                Text("\(summary.habitsPercent)%")
+                                    .font(.system(size: 32, weight: .black, design: .rounded))
+                                    .monospacedDigit()
+                                    .contentTransition(.numericText())
+                                    .animation(ProMotionSpring.ringFill, value: summary.habitsPercent)
+                                    .foregroundStyle(.white)
+                                Text("\(summary.habitsCompleted) / \(summary.habitsTotal)")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(habitsRingColor)
+                            }
+                        }
+                        Text("HABITS")
+                            .font(.system(size: 10.5, weight: .black, design: .rounded))
+                            .tracking(1.2)
                             .foregroundStyle(DailyOSTheme.eyebrow)
                     }
+                    .frame(maxWidth: .infinity)
+
+                    // Right Companion Ring: Pure To-Do / Calendar % (tapping jumps straight to Focus tab!)
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        onTapTodoRing()
+                    } label: {
+                        VStack(spacing: 6) {
+                            ZStack {
+                                OrganicBreathingAura(color: todoRingColor, diameter: 144)
+                                AmbientBloomRing(
+                                    progress: Double(summary.todoPercent) / 100.0,
+                                    color: todoRingColor,
+                                    lineWidth: 11,
+                                    diameter: 120
+                                )
+
+                                VStack(spacing: 1) {
+                                    Text("\(summary.todoPercent)%")
+                                        .font(.system(size: 30, weight: .black, design: .rounded))
+                                        .monospacedDigit()
+                                        .contentTransition(.numericText())
+                                        .animation(ProMotionSpring.ringFill, value: summary.todoPercent)
+                                        .foregroundStyle(.white)
+                                    Text("\(summary.todoCompleted) / \(summary.todoTotal)")
+                                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(todoRingColor)
+                                }
+                            }
+                            HStack(spacing: 3) {
+                                Text("TO-DO")
+                                    .font(.system(size: 10.5, weight: .black, design: .rounded))
+                                    .tracking(1.2)
+                                    .foregroundStyle(todoRingColor)
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 8.5, weight: .black))
+                                    .foregroundStyle(todoRingColor.opacity(0.85))
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(MidnightPressButtonStyle())
                 }
                 .padding(.vertical, 2)
                 .transition(.midnightReveal)
 
                 Text(summary.headline)
-                    .font(.system(size: 21, weight: .bold, design: .rounded))
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
                     .foregroundStyle(.white)
 
-                // 2 x 2 Bento Micro-Tiles
+                // 2 x 2 Bento Micro-Tiles (HABITS | TO-DO | STREAK | FOCUSED)
                 LazyVGrid(columns: [GridItem(.flexible(), spacing: 10), GridItem(.flexible(), spacing: 10)], spacing: 10) {
                     scoreBentoTile(title: "HABITS", value: "\(summary.habitsCompleted) / \(summary.habitsTotal)")
-                    scoreBentoTile(title: "FOCUS", value: "\(summary.focusMinutesToday) min")
+                    scoreBentoTile(title: "TO-DO", value: "\(summary.todoCompleted) / \(summary.todoTotal)")
                     scoreBentoTile(title: "STREAK", value: summary.globalStreak == 1 ? "1 day" : "\(summary.globalStreak) days")
-                    scoreBentoTile(title: "WAKE", value: summary.wakeCompletedToday ? "Done" : "Pending")
+                    scoreBentoTile(title: "FOCUSED", value: "\(summary.focusMinutesToday) min")
                 }
             }
         }
         .padding(16)
-        .ambientCard(accent: ringColor, cornerRadius: 24, washOpacity: 0.08)
-        .midnightShimmer(trigger: score100Trigger, color: ringColor)
-        .onChange(of: summary.score) { oldVal, newVal in
+        .ambientCard(accent: habitsRingColor, cornerRadius: 24, washOpacity: 0.08)
+        .midnightShimmer(trigger: score100Trigger, color: habitsRingColor)
+        .onChange(of: summary.habitsPercent) { oldVal, newVal in
             if newVal == 100 && oldVal < 100 {
                 score100Trigger += 1
             }
@@ -629,6 +972,7 @@ private struct TodayScoreHeroCard: View {
 private struct HabitFeedCardView: View {
     let habit: HabitItem
     let logMap: [String: HabitLog]
+    var spotlightAccent: Color? = nil
     let onQuickCheckIn: () -> Void
     let onLongPressQuantity: () -> Void
 
@@ -663,10 +1007,21 @@ private struct HabitFeedCardView: View {
                     )
 
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(habit.title)
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(habit.title)
+                            .font(.system(size: spotlightAccent != nil ? 17 : 16, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        if let spot = spotlightAccent {
+                            Text(habit.timeOfDay == .morning ? "☀️ NOW" : "🌙 TONIGHT")
+                                .font(.system(size: 9, weight: .black, design: .rounded))
+                                .foregroundStyle(spot)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(spot.opacity(0.18), in: Capsule())
+                        }
+                    }
 
                     Text(HabitMetricsEngine.streakSubtitle(for: habit, logMap: logMap))
                         .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -761,8 +1116,17 @@ private struct HabitFeedCardView: View {
                 showAxes: false
             )
         }
-        .padding(16)
-        .ambientCard(accent: accent, cornerRadius: 22, washOpacity: 0.09)
+        .padding(spotlightAccent != nil ? 18 : 16)
+        .ambientCard(
+            accent: spotlightAccent ?? accent,
+            cornerRadius: 22,
+            washOpacity: spotlightAccent != nil ? 0.15 : 0.09
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(spotlightAccent?.opacity(0.60) ?? Color.clear, lineWidth: spotlightAccent != nil ? 1.5 : 0)
+        )
+        .animation(.spring(response: 0.42, dampingFraction: 0.82), value: spotlightAccent != nil)
     }
 }
 

@@ -192,7 +192,7 @@ enum BackupService {
                 trackingMode: HabitTrackingMode(rawValue: dto.trackingModeRaw ?? "") ?? .binary,
                 dailyTarget: dto.dailyTarget ?? 1.0,
                 unitLabel: dto.unitLabel ?? "",
-                timeOfDay: HabitTimeOfDay(rawValue: dto.timeOfDayRaw) ?? .morning,
+                timeOfDay: HabitTimeOfDay.from(raw: dto.timeOfDayRaw),
                 sortOrder: dto.sortOrder,
                 reminderEnabled: dto.reminderEnabled,
                 reminderHour: dto.reminderHour,
