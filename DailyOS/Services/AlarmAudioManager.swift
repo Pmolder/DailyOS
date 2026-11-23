@@ -39,6 +39,9 @@ final class AlarmAudioManager: ObservableObject {
     @Published private(set) var focusWarningElapsedSeconds: TimeInterval = 0
     @Published private(set) var focusWarningVolumeFraction: Float = 0.0
 
+    // Live Soundscape Audition State
+    @Published private(set) var previewingSoundID: String? = nil
+
     // MARK: - Private Audio & Haptic State
 
     private var volumeController: SystemVolumeController {
@@ -63,6 +66,7 @@ final class AlarmAudioManager: ObservableObject {
     private var wakeStartDate: Date?
     private var wakePhaseIndex: Int = 0
     private var activeWakeTone: AlarmTone = .nuclearSiren
+    private var activeSoundscape: AlarmSoundscape = .goldenHour
 
     private var penaltyBaseProgress: Double = 0.0
     private var penaltyResumeDate: Date?
@@ -177,10 +181,14 @@ final class AlarmAudioManager: ObservableObject {
     // MARK: - PROFILE 1: Wake Alarm (0-30s Vibration Only -> 30-60s 1%-15% -> 60-90s 15%-50%)
 
     func startWakeEscalation(tone: AlarmTone) {
+        startWakeEscalation(soundscape: AlarmSoundscape.resolve(legacyOrID: tone.rawValue))
+    }
+
+    func startWakeEscalation(soundscape: AlarmSoundscape) {
         stopPreview()
         stopFocusWarning()
 
-        activeWakeTone = tone
+        activeSoundscape = soundscape
         isWakeSirenActive = true
         isSirenSilencedForChallenge = false
         isPenaltyBlastActive = false
@@ -450,11 +458,14 @@ final class AlarmAudioManager: ObservableObject {
     }
 
     private func startWakeAudioSource(tone: AlarmTone, initialGain: Float) {
+        startWakeAudioSource(soundscape: activeSoundscape, initialGain: initialGain)
+    }
+
+    private func startWakeAudioSource(soundscape: AlarmSoundscape, initialGain: Float) {
         stopWakeAudioOnly()
 
-        if let fileName = tone.bundledFileName,
-           let url = WavFileSynthesizer.resolveSoundURL(fileName: fileName),
-           let player = try? AVAudioPlayer(contentsOf: url) {
+        let wavData = AlarmSoundSynthesizer.wavData(for: soundscape)
+        if let player = try? AVAudioPlayer(data: wavData) {
             player.numberOfLoops = -1
             player.volume = max(0.0, min(1.0, initialGain))
             player.prepareToPlay()
@@ -466,9 +477,9 @@ final class AlarmAudioManager: ObservableObject {
         }
 
         startAVAudioEngineNuclearSynth(
-            baseFrequency: tone.baseFrequency,
-            secondaryFrequency: tone.secondaryFrequency,
-            modulationRateHz: tone.modulationRateHz,
+            baseFrequency: activeWakeTone.baseFrequency,
+            secondaryFrequency: activeWakeTone.secondaryFrequency,
+            modulationRateHz: activeWakeTone.modulationRateHz,
             initialGain: initialGain
         )
     }
@@ -677,20 +688,32 @@ final class AlarmAudioManager: ObservableObject {
         }
     }
 
-    // MARK: - Tone & Sound Previews
+    // MARK: - Tone & Soundscape Previews
 
-    func previewAlarmTone(_ tone: AlarmTone) {
+    func togglePreview(soundscape: AlarmSoundscape) {
         guard !isWakeSirenActive && !isFocusWarningActive else { return }
+        if previewingSoundID == soundscape.rawValue {
+            stopPreview()
+            return
+        }
         stopPreview()
 
-        activateOverridePlaybackSession()
-        if let fileName = tone.bundledFileName,
-           let url = WavFileSynthesizer.resolveSoundURL(fileName: fileName),
-           let player = try? AVAudioPlayer(contentsOf: url) {
-            player.volume = 0.45
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+            let wavData = AlarmSoundSynthesizer.wavData(for: soundscape)
+            let player = try AVAudioPlayer(data: wavData)
+            player.numberOfLoops = -1
+            player.volume = 0.55
             player.prepareToPlay()
             player.play()
             previewPlayer = player
+            previewingSoundID = soundscape.rawValue
+        } catch {
+            print("[AlarmAudioManager] Soundscape preview failed: \(error.localizedDescription)")
+            previewingSoundID = nil
+            return
         }
 
         let work = DispatchWorkItem { [weak self] in
@@ -699,7 +722,11 @@ final class AlarmAudioManager: ObservableObject {
             }
         }
         previewStopWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: work)
+    }
+
+    func previewAlarmTone(_ tone: AlarmTone) {
+        togglePreview(soundscape: AlarmSoundscape.resolve(legacyOrID: tone.rawValue))
     }
 
     func previewNotificationSound(_ option: NotificationSoundOption) {
@@ -726,6 +753,7 @@ final class AlarmAudioManager: ObservableObject {
         previewStopWorkItem = nil
         previewPlayer?.stop()
         previewPlayer = nil
+        previewingSoundID = nil
     }
 
     // MARK: - Session Activation & Interruption Recovery

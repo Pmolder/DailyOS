@@ -254,6 +254,7 @@ final class AlarmItem {
     var isEnabled: Bool
     var repeatDaysRaw: String
     var toneRaw: String
+    var soundID: String = AlarmSoundscape.goldenHour.rawValue
     var missionTypeRaw: String
     var repGoal: Int = 15
     var stepGoal: Int = 500
@@ -272,6 +273,7 @@ final class AlarmItem {
         isEnabled: Bool = true,
         repeatDays: Set<Int> = [2, 3, 4, 5, 6],
         tone: AlarmTone = .nuclearSiren,
+        soundID: String = AlarmSoundscape.goldenHour.rawValue,
         missionType: MissionType = .random,
         repGoal: Int = 15,
         stepGoal: Int = 500,
@@ -289,6 +291,7 @@ final class AlarmItem {
         self.isEnabled = isEnabled
         self.repeatDaysRaw = repeatDays.sorted().map(String.init).joined(separator: ",")
         self.toneRaw = tone.rawValue
+        self.soundID = AlarmSoundscape.resolve(legacyOrID: soundID).rawValue
         self.missionTypeRaw = missionType.rawValue
         self.repGoal = max(5, repGoal)
         self.stepGoal = max(50, min(5000, stepGoal))
@@ -317,6 +320,18 @@ final class AlarmItem {
     var tone: AlarmTone {
         get { AlarmTone(rawValue: toneRaw) ?? .nuclearSiren }
         set { toneRaw = newValue.rawValue }
+    }
+
+    var soundscape: AlarmSoundscape {
+        get {
+            if let direct = AlarmSoundscape(rawValue: soundID) {
+                return direct
+            }
+            return AlarmSoundscape.resolve(legacyOrID: toneRaw)
+        }
+        set {
+            soundID = newValue.rawValue
+        }
     }
 
     var missionType: MissionType {

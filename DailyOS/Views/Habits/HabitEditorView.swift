@@ -492,65 +492,150 @@ struct HabitEditorView: View {
     }
 }
 
-// MARK: - Categorized SF Symbol Picker Sheet
+// MARK: - 80+ Searchable & Categorized SF Symbol Picker Sheet
 
 private struct CategorizedIconPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Binding var selectedIcon: String
     let accent: Color
 
-    private let categories: [(title: String, icons: [String])] = [
-        ("Fitness", ["figure.run", "dumbbell.fill", "figure.strengthtraining.functional", "bicycle", "figure.walk", "figure.pool.swim", "flame.fill", "shoeprints.fill"]),
-        ("Health", ["drop.fill", "heart.fill", "pills.fill", "bed.double.fill", "fork.knife", "carrot.fill", "hand.raised.fill", "lungs.fill"]),
-        ("Mind", ["figure.mind.and.body", "brain.head.profile", "moon.stars.fill", "sun.max.fill", "sparkles", "leaf.fill", "wind", "eye.fill"]),
-        ("Learning", ["book.fill", "graduationcap.fill", "pencil.and.outline", "globe", "character.book.closed.fill", "headphones", "music.note", "lightbulb.fill"]),
-        ("Productivity", ["laptopcomputer", "checkmark.seal.fill", "target", "timer", "bolt.fill", "briefcase.fill", "calendar", "tray.full.fill"]),
-        ("Lifestyle", ["cup.and.saucer.fill", "house.fill", "banknote.fill", "camera.fill", "guitars.fill", "paintbrush.fill", "pawprint.fill", "airplane"])
-    ]
+    @State private var searchText: String = ""
+    @State private var selectedCategory: HabitIconCategory = .all
+
+    private var filteredIcons: [HabitIconEntry] {
+        HabitIconLibrary.filtered(category: selectedCategory, query: searchText)
+    }
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    ForEach(categories, id: \.title) { category in
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(category.title).eyebrowStyle()
+        ZStack {
+            DailyOSTheme.canvas.ignoresSafeArea()
 
-                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 4), spacing: 10) {
-                                ForEach(category.icons, id: \.self) { sym in
-                                    let isSelected = selectedIcon == sym
-                                    Button {
-                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                        selectedIcon = sym
-                                        dismiss()
-                                    } label: {
-                                        RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                            .fill(isSelected ? accent.opacity(0.24) : DailyOSTheme.card)
-                                            .frame(height: 54)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                                    .stroke(isSelected ? accent : DailyOSTheme.hairline, lineWidth: isSelected ? 1.5 : 1)
-                                            )
-                                            .overlay(
-                                                Image(systemName: sym)
-                                                    .font(.system(size: 22, weight: .semibold))
-                                                    .foregroundStyle(isSelected ? accent : Color.white.opacity(0.85))
-                                            )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
+            VStack(spacing: 14) {
+                // Header
+                HStack {
+                    FrostedCircleButton(icon: "xmark", size: 36) {
+                        dismiss()
+                    }
+                    Spacer()
+                    Text("Choose Icon")
+                        .font(.system(size: 17, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                    Spacer()
+                    Text("\(filteredIcons.count)")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                        .frame(width: 36, alignment: .trailing)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+
+                // Search Bar
+                HStack(spacing: 10) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+
+                    TextField(
+                        "",
+                        text: $searchText,
+                        prompt: Text("Search 80+ icons...").foregroundStyle(Color.white.opacity(0.32))
+                    )
+                    .font(.system(size: 15, weight: .medium, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    if !searchText.isEmpty {
+                        Button {
+                            searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 15))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
-                .padding(18)
-            }
-            .background(DailyOSTheme.canvas.ignoresSafeArea())
-            .navigationTitle("Choose Icon")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+                .padding(.horizontal, 18)
+
+                // Scrollable Category Pills
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(HabitIconCategory.allCases) { cat in
+                            let active = selectedCategory == cat
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                selectedCategory = cat
+                            } label: {
+                                Text(cat.rawValue)
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(active ? Color.black : Color.white.opacity(0.8))
+                                    .padding(.horizontal, 13)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        active ? accent : DailyOSTheme.inputSurface,
+                                        in: Capsule()
+                                    )
+                                    .overlay(
+                                        Capsule().stroke(active ? accent : DailyOSTheme.hairline, lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 18)
+                }
+
+                // 6-Column Icon Grid
+                ScrollView(showsIndicators: false) {
+                    if filteredIcons.isEmpty {
+                        VStack(spacing: 8) {
+                            Image(systemName: "magnifyingglass")
+                                .font(.system(size: 28))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                            Text("No icons match \"\(searchText)\"")
+                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 48)
+                    } else {
+                        LazyVGrid(
+                            columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 6),
+                            spacing: 10
+                        ) {
+                            ForEach(filteredIcons) { entry in
+                                let isSelected = selectedIcon == entry.symbol
+                                Button {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    selectedIcon = entry.symbol
+                                    dismiss()
+                                } label: {
+                                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                        .fill(isSelected ? accent.opacity(0.24) : DailyOSTheme.card)
+                                        .frame(height: 50)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                                .stroke(isSelected ? accent : DailyOSTheme.hairline, lineWidth: isSelected ? 1.8 : 1)
+                                        )
+                                        .shadow(color: isSelected ? accent.opacity(0.35) : Color.clear, radius: 8)
+                                        .overlay(
+                                            Image(systemName: entry.symbol)
+                                                .font(.system(size: 20, weight: .semibold))
+                                                .foregroundStyle(isSelected ? accent : Color.white.opacity(0.85))
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.bottom, 26)
+                    }
                 }
             }
         }

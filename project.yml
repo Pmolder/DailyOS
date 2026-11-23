@@ -22,14 +22,20 @@ targets:
       - path: DailyOS
         excludes:
           - Info.plist
+          - DailyOS.entitlements
+      - path: Shared
+    dependencies:
+      - target: DailyOSWidgets
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patrik.dailyos
         PRODUCT_NAME: DailyOS
-        MARKETING_VERSION: "3.4.0"
-        CURRENT_PROJECT_VERSION: "14"
+        MARKETING_VERSION: "3.5.0"
+        CURRENT_PROJECT_VERSION: "15"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: DailyOS/Info.plist
+        CODE_SIGN_ENTITLEMENTS: DailyOS/DailyOS.entitlements
         CODE_SIGN_IDENTITY: ""
         CODE_SIGNING_REQUIRED: NO
         CODE_SIGNING_ALLOWED: NO
@@ -60,3 +66,46 @@ targets:
         NSCalendarsFullAccessUsageDescription: "DailyOS optionally reads your iOS calendars to schedule focus accountability check-ins for your events."
         NSCalendarsUsageDescription: "DailyOS optionally reads your calendar events to run focus accountability blocks."
         NSMotionUsageDescription: "DailyOS uses CoreMotion pedometer sensors to count your live steps during the Steps wake mission."
+
+  DailyOSWidgets:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: DailyOSWidgets
+        excludes:
+          - Info.plist
+          - DailyOSWidgets.entitlements
+      - path: Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.patrik.dailyos.widgets
+        PRODUCT_NAME: DailyOSWidgets
+        MARKETING_VERSION: "3.5.0"
+        CURRENT_PROJECT_VERSION: "15"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: DailyOSWidgets/Info.plist
+        CODE_SIGN_ENTITLEMENTS: DailyOSWidgets/DailyOSWidgets.entitlements
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
+        AD_HOC_CODE_SIGNING_ALLOWED: YES
+        ENABLE_PREVIEWS: NO
+        SKIP_INSTALL: YES
+        LD_RUNPATH_SEARCH_PATHS:
+          - "$(inherited)"
+          - "@executable_path/Frameworks"
+          - "@executable_path/../../Frameworks"
+    info:
+      path: DailyOSWidgets/Info.plist
+      properties:
+        CFBundleDisplayName: DailyOS Widgets
+        CFBundleName: $(PRODUCT_NAME)
+        CFBundleExecutable: $(EXECUTABLE_NAME)
+        CFBundleIdentifier: $(PRODUCT_BUNDLE_IDENTIFIER)
+        CFBundleInfoDictionaryVersion: "6.0"
+        CFBundlePackageType: $(PRODUCT_BUNDLE_PACKAGE_TYPE)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension

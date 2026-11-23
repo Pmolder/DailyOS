@@ -33,7 +33,7 @@ struct ContentView: View {
                 }
                 .tag(1)
 
-            FocusTabView(onOpenSettings: { selectedTab = 3 })
+            FocusTabView()
                 .tabItem {
                     Label("Focus", systemImage: "timer")
                 }
@@ -71,19 +71,30 @@ struct ContentView: View {
         }
         .task {
             _ = await notificationScheduler.requestAuthorizationIfNeeded()
+            WidgetSyncCoordinator.consumePendingDeltasAndSync()
             alarmEngine.syncWithAlarms()
             focusManager.handleAppReopenCheck()
             await focusManager.syncAllSources()
+            await DailyNotificationManager.shared.refreshScheduledNotifications()
         }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
                 DispatchQueue.main.async {
                     SystemVolumeController.shared.ensureMountedInKeyWindow()
                 }
+                WidgetSyncCoordinator.consumePendingDeltasAndSync()
                 alarmEngine.refreshGuidedAccessStatus()
                 alarmEngine.syncWithAlarms()
                 focusManager.handleAppReopenCheck()
-                Task { await focusManager.syncAllSources() }
+                Task {
+                    await focusManager.syncAllSources()
+                    await DailyNotificationManager.shared.refreshScheduledNotifications()
+                }
+            } else if newPhase == .background || newPhase == .inactive {
+                WidgetSyncCoordinator.syncSnapshotFromStore()
+                Task {
+                    await DailyNotificationManager.shared.refreshScheduledNotifications()
+                }
             }
         }
     }

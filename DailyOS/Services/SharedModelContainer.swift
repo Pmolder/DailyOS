@@ -206,5 +206,9 @@ final class SharedModelContainer {
         } catch {
             print("[SharedModelContainer] Save error: \(error.localizedDescription)")
         }
+        WidgetSyncCoordinator.syncSnapshotFromStore()
+        Task {
+            await DailyNotificationManager.shared.refreshScheduledNotifications()
+        }
     }
 }

@@ -20,6 +20,7 @@ struct HabitsListView: View {
     @State private var showingCreateSheet: Bool = false
     @State private var showingStreakSheet: Bool = false
     @State private var showingAnalyticsSheet: Bool = false
+    @State private var showingNotificationStudio: Bool = false
     @State private var quantityAdjustHabit: HabitItem?
 
     private var activeHabits: [HabitItem] {
@@ -67,6 +68,11 @@ struct HabitsListView: View {
                                 FrostedCircleButton(icon: "chart.xyaxis.line", size: 38) {
                                     showingAnalyticsSheet = true
                                 }
+                            }
+
+                            // Daily Notification Studio Circular Bell Button
+                            FrostedCircleButton(icon: "bell.badge", size: 38) {
+                                showingNotificationStudio = true
                             }
 
                             // Streak Flame Pill
@@ -166,6 +172,9 @@ struct HabitsListView: View {
             }
             .sheet(isPresented: $showingStreakSheet) {
                 StreakFreezeSheetView(summary: globalStreak)
+            }
+            .sheet(isPresented: $showingNotificationStudio) {
+                NotificationStudioView()
             }
             .sheet(isPresented: $showingAnalyticsSheet) {
                 if let first = activeHabits.first {

@@ -34,6 +34,8 @@ enum HabitMetricsEngine {
     private static let wakeCompletedDayKey = "com.patrik.dailyos.wakeCompletedDayKey"
     private static let focusMinutesDayKey = "com.patrik.dailyos.focusMinutesDayKey"
     private static let focusMinutesCountKey = "com.patrik.dailyos.focusMinutesCount"
+    private static let focusSessionsDayKey = "com.patrik.dailyos.focusSessionsDayKey"
+    private static let focusSessionsCountKey = "com.patrik.dailyos.focusSessionsCount"
 
     // MARK: - Daily Wake & Deep Work Telemetry Helpers
 
@@ -57,6 +59,20 @@ enum HabitMetricsEngine {
         let today = HabitItem.dateKey(for: Date())
         guard UserDefaults.standard.string(forKey: focusMinutesDayKey) == today else { return 0 }
         return UserDefaults.standard.integer(forKey: focusMinutesCountKey)
+    }
+
+    static func incrementFocusSessionsToday() {
+        let today = HabitItem.dateKey(for: Date())
+        let storedDay = UserDefaults.standard.string(forKey: focusSessionsDayKey)
+        let base = (storedDay == today) ? UserDefaults.standard.integer(forKey: focusSessionsCountKey) : 0
+        UserDefaults.standard.set(today, forKey: focusSessionsDayKey)
+        UserDefaults.standard.set(base + 1, forKey: focusSessionsCountKey)
+    }
+
+    static var completedFocusSessionsToday: Int {
+        let today = HabitItem.dateKey(for: Date())
+        guard UserDefaults.standard.string(forKey: focusSessionsDayKey) == today else { return 0 }
+        return UserDefaults.standard.integer(forKey: focusSessionsCountKey)
     }
 
     // MARK: - Log Map Lookup (O(1) by dayKey)

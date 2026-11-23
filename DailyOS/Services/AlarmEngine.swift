@@ -142,7 +142,7 @@ final class AlarmEngine: ObservableObject {
         activeRingingAlarm = alarm
         isAlarmRinging = true
         NotificationScheduler.shared.cancelAlarmBurstNotifications(for: alarm.id)
-        audioManager.startWakeEscalation(tone: alarm.tone)
+        audioManager.startWakeEscalation(soundscape: alarm.soundscape)
     }
 
     /// Launches a temporary non-persisted alarm to preview the Solar-Orange Wake UI & missions from Settings.
@@ -207,6 +207,10 @@ final class AlarmEngine: ObservableObject {
 
     func previewAlarmTone(_ tone: AlarmTone) {
         audioManager.previewAlarmTone(tone)
+    }
+
+    func togglePreview(soundscape: AlarmSoundscape) {
+        audioManager.togglePreview(soundscape: soundscape)
     }
 
     func previewNotificationSound(_ option: NotificationSoundOption) {

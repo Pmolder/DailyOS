@@ -4,6 +4,7 @@ import SwiftData
 struct AlarmEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var audioManager = AlarmAudioManager.shared
 
     let alarmToEdit: AlarmItem?
 
@@ -11,6 +12,8 @@ struct AlarmEditorView: View {
     @State private var label: String = ""
     @State private var repeatDays: Set<Int> = [2, 3, 4, 5, 6]
     @State private var selectedTone: AlarmTone = .nuclearSiren
+    @State private var selectedSoundscape: AlarmSoundscape = .goldenHour
+    @State private var expandedSoundPicker: Bool = false
 
     // Stage-1 Physical Mission (defaults to Daily Random)
     @State private var selectedMission: MissionType = .random
@@ -125,39 +128,123 @@ struct AlarmEditorView: View {
                             .ambientCard(cornerRadius: 20)
                         }
 
-                        // 3. HARDWARE VOLUME SIREN
+                        // 3. PROCEDURAL ALARM SOUNDSCAPES (12 Categorized Sounds + Live Preview)
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("ALARM SIREN")
-                                .eyebrowStyle()
+                            HStack {
+                                Text("ALARM SOUNDSCAPE")
+                                    .eyebrowStyle()
+                                Spacer()
+                                Text(selectedSoundscape.displayName)
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.solarAccent)
+                            }
 
                             VStack(spacing: 12) {
-                                HStack {
-                                    Text("Siren Tone")
-                                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                                        .foregroundStyle(Color.white)
+                                // Current selection header + expand/collapse
+                                HStack(spacing: 12) {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(selectedSoundscape.displayName)
+                                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                                            .foregroundStyle(Color.white)
+                                        Text(selectedSoundscape.vibeDescription)
+                                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                                            .foregroundStyle(DailyOSTheme.eyebrow)
+                                            .lineLimit(2)
+                                    }
                                     Spacer()
-                                    Picker("Siren Tone", selection: $selectedTone) {
-                                        ForEach(AlarmTone.allCases) { tone in
-                                            Text(tone.displayName).tag(tone)
+                                    soundPreviewCircleButton(for: selectedSoundscape)
+                                    Button {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                            expandedSoundPicker.toggle()
+                                        }
+                                    } label: {
+                                        Image(systemName: expandedSoundPicker ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(DailyOSTheme.eyebrow)
+                                            .frame(width: 32, height: 32)
+                                            .background(DailyOSTheme.inputSurface, in: Circle())
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                if expandedSoundPicker {
+                                    Divider().overlay(DailyOSTheme.hairline)
+
+                                    VStack(alignment: .leading, spacing: 16) {
+                                        ForEach(AlarmSoundCategory.allCases) { category in
+                                            VStack(alignment: .leading, spacing: 8) {
+                                                HStack {
+                                                    Text(category.rawValue)
+                                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                                        .tracking(0.8)
+                                                        .textCase(.uppercase)
+                                                        .foregroundStyle(DailyOSTheme.solarAccent)
+                                                    Spacer()
+                                                    Text(category.subtitle)
+                                                        .font(.system(size: 10, weight: .medium, design: .rounded))
+                                                        .foregroundStyle(DailyOSTheme.eyebrow)
+                                                }
+
+                                                VStack(spacing: 6) {
+                                                    ForEach(category.sounds) { sound in
+                                                        let isSelected = selectedSoundscape == sound
+                                                        HStack(spacing: 10) {
+                                                            Button {
+                                                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                                                selectedSoundscape = sound
+                                                            } label: {
+                                                                HStack(spacing: 10) {
+                                                                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                                                        .font(.system(size: 16, weight: .semibold))
+                                                                        .foregroundStyle(isSelected ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow)
+
+                                                                    VStack(alignment: .leading, spacing: 2) {
+                                                                        Text(sound.displayName)
+                                                                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                                            .foregroundStyle(Color.white)
+                                                                        Text(sound.vibeDescription)
+                                                                            .font(.system(size: 11, weight: .regular, design: .rounded))
+                                                                            .foregroundStyle(DailyOSTheme.eyebrow)
+                                                                            .lineLimit(2)
+                                                                    }
+                                                                    Spacer(minLength: 4)
+                                                                }
+                                                                .contentShape(Rectangle())
+                                                            }
+                                                            .buttonStyle(.plain)
+
+                                                            soundPreviewCircleButton(for: sound)
+                                                        }
+                                                        .padding(.horizontal, 12)
+                                                        .padding(.vertical, 10)
+                                                        .background(
+                                                            isSelected ? DailyOSTheme.solarAccent.opacity(0.12) : DailyOSTheme.inputSurface,
+                                                            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                        )
+                                                        .overlay(
+                                                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                                                .stroke(isSelected ? DailyOSTheme.solarAccent.opacity(0.45) : DailyOSTheme.hairline, lineWidth: 1)
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
-                                    .pickerStyle(.menu)
-                                    .tint(DailyOSTheme.solarAccent)
+                                } else {
+                                    Button {
+                                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                            expandedSoundPicker = true
+                                        }
+                                    } label: {
+                                        Label("Browse 12 Procedural Soundscapes", systemImage: "waveform")
+                                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                                            .foregroundStyle(DailyOSTheme.solarAccent)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 10)
+                                            .background(DailyOSTheme.solarAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-
-                                Divider().overlay(DailyOSTheme.hairline)
-
-                                Button {
-                                    AlarmEngine.shared.previewAlarmTone(selectedTone)
-                                } label: {
-                                    Label("Preview Siren (2.5s)", systemImage: "speaker.wave.3.fill")
-                                        .font(.system(size: 14, weight: .bold, design: .rounded))
-                                        .foregroundStyle(DailyOSTheme.solarAccent)
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 10)
-                                        .background(DailyOSTheme.solarAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
                             }
                             .padding(16)
                             .ambientCard(cornerRadius: 20)
@@ -421,6 +508,25 @@ struct AlarmEditorView: View {
         }
     }
 
+    private func soundPreviewCircleButton(for sound: AlarmSoundscape) -> some View {
+        let isPlaying = audioManager.previewingSoundID == sound.rawValue
+        return Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            AlarmEngine.shared.togglePreview(soundscape: sound)
+        } label: {
+            Image(systemName: isPlaying ? "stop.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundStyle(isPlaying ? Color.black : DailyOSTheme.solarAccent)
+                .frame(width: 34, height: 34)
+                .background(
+                    isPlaying ? DailyOSTheme.solarAccent : DailyOSTheme.solarAccent.opacity(0.16),
+                    in: Circle()
+                )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isPlaying ? "Stop Preview" : "Play Live Preview")
+    }
+
     private var formattedLimitLabel: String {
         let secs = totalStepsLimitSeconds
         let m = secs / 60
@@ -438,6 +544,7 @@ struct AlarmEditorView: View {
             label = alarm.label
             repeatDays = alarm.repeatDays
             selectedTone = alarm.tone
+            selectedSoundscape = alarm.soundscape
             selectedMission = alarm.missionType
             repGoal = max(5, alarm.repGoal)
             stepGoal = max(50, min(5000, alarm.stepGoal))
@@ -454,6 +561,7 @@ struct AlarmEditorView: View {
             comps.minute = 0
             selectedTime = calendar.date(from: comps) ?? Date()
             label = ""
+            selectedSoundscape = .goldenHour
             selectedMission = .random
             selectedBrainGame = .random
             repGoal = 15
@@ -480,6 +588,7 @@ struct AlarmEditorView: View {
             alarm.minute = minute
             alarm.repeatDays = repeatDays
             alarm.tone = selectedTone
+            alarm.soundscape = selectedSoundscape
             alarm.missionType = selectedMission
             alarm.repGoal = repGoal
             alarm.stepGoal = clampedSteps
@@ -497,6 +606,7 @@ struct AlarmEditorView: View {
                 isEnabled: true,
                 repeatDays: repeatDays,
                 tone: selectedTone,
+                soundID: selectedSoundscape.rawValue,
                 missionType: selectedMission,
                 repGoal: repGoal,
                 stepGoal: clampedSteps,

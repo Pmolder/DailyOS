@@ -26,7 +26,7 @@ jobs:
         id: meta
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          VERSION="3.4.0"
+          VERSION="3.5.0"
           BUILD_NUM="${{ github.run_number }}"
           IPA_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}.ipa"
           ARTIFACT_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}"
@@ -36,7 +36,7 @@ jobs:
           echo "ipa_name=${IPA_NAME}" >> "$GITHUB_OUTPUT"
           echo "artifact_name=${ARTIFACT_NAME}" >> "$GITHUB_OUTPUT"
           echo "Building commit ${SHORT_SHA} -> ${IPA_NAME}"
-          find DailyOS -name "*.swift" | sort
+          find DailyOS Shared DailyOSWidgets -name "*.swift" | sort
 
       - name: Install XcodeGen
         run: |
@@ -50,7 +50,7 @@ jobs:
           rm -rf build Payload DailyOS.xcodeproj *.ipa
           xcodegen generate
 
-      - name: Build Unsigned Release App
+      - name: Build Unsigned Release App & Embedded Widget Extension
         run: |
           xcodebuild clean build \
             -project DailyOS.xcodeproj \
@@ -65,19 +65,38 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             AD_HOC_CODE_SIGNING_ALLOWED=YES
 
-      - name: Package Payload & Verify Compiled Binary
+      - name: Package Payload & Verify Compiled Binary + Widget Extension
         run: |
           rm -rf Payload *.ipa
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/DailyOS.app Payload/
 
-          echo "=== Verifying Info.plist Version & Privacy Keys ==="
+          echo "=== Verifying Main App Info.plist Version & Privacy Keys ==="
           plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSMotionUsageDescription|NSCameraUsageDescription|NSCalendarsFullAccessUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSMotionUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCameraUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCalendarsFullAccessUsageDescription"
 
-          echo "=== Verifying v3.4 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
+          echo "=== Verifying Embedded DailyOSWidgets.appex & Matching Versions ==="
+          WIDGET_APPEX="Payload/DailyOS.app/PlugIns/DailyOSWidgets.appex"
+          if [ ! -d "${WIDGET_APPEX}" ]; then
+            echo "ERROR: Missing embedded WidgetKit extension at ${WIDGET_APPEX}"
+            exit 1
+          fi
+          plutil -p "${WIDGET_APPEX}/Info.plist" | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSExtensionPointIdentifier"
+
+          APP_SHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" Payload/DailyOS.app/Info.plist)
+          APP_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" Payload/DailyOS.app/Info.plist)
+          EXT_SHORT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "${WIDGET_APPEX}/Info.plist")
+          EXT_VER=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "${WIDGET_APPEX}/Info.plist")
+
+          if [ "${APP_SHORT}" != "${EXT_SHORT}" ] || [ "${APP_VER}" != "${EXT_VER}" ]; then
+            echo "ERROR: Version mismatch between DailyOS (${APP_SHORT} / ${APP_VER}) and DailyOSWidgets (${EXT_SHORT} / ${EXT_VER})"
+            exit 1
+          fi
+          echo "OK: DailyOS and DailyOSWidgets versions match (${APP_SHORT} b${APP_VER})"
+
+          echo "=== Verifying v3.5 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
           python3 - <<'EOF'
           from pathlib import Path
           import sys
@@ -95,6 +114,8 @@ jobs:
               "Do Challenge",
               "Steps",
               "Preview Solar-Orange Wake Screen",
+              "Daily Notifications",
+              "Main Character Morning",
           ]
           forbidden = [
               "AI Camera Pushups",
@@ -102,7 +123,7 @@ jobs:
 
           for item in required:
               if not has_string(item):
-                  print(f"ERROR: Missing expected v3.4 string in binary: {item}")
+                  print(f"ERROR: Missing expected v3.5 string in binary: {item}")
                   sys.exit(1)
               print(f"OK (found): {item}")
 

@@ -119,6 +119,25 @@ final class FocusAccountabilityManager: ObservableObject {
         refreshScheduleLocally()
     }
 
+    func resetAfterFactoryReset() {
+        appleCalendarSyncEnabled = false
+        trackedAppleCalendarIDs = []
+        cachedGoogleBlocks = []
+        upcomingBlocks = []
+        activeFocusBlock = nil
+        isFocusAlarmFullScreenPresented = false
+        isCapturingPhotoProof = false
+        isEvasionPenaltyActive = false
+        lastGoogleSyncMessage = nil
+        lastVerificationFeedback = nil
+        lastVerificationWasRejected = false
+        completedCheckInsForCurrentBlock = 0
+        isCurrentBlockCleared = false
+        nextCheckInDeadline = nil
+        secondsUntilCheckInDeadline = 0
+        checkInPhaseLabel = "No active focus task"
+    }
+
     func restoreSettings(
         trackedAppleCalendarIDs: Set<String>,
         appleEnabled: Bool,

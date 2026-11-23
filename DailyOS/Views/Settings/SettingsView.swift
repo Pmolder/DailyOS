@@ -1,16 +1,29 @@
 import SwiftUI
+import SwiftData
 import AVFoundation
 import CoreMotion
 import EventKit
 import UniformTypeIdentifiers
 import UIKit
 
-/// Midnight Obsidian Settings Tab: Wake QR, Solar Wake & Brain Game Sandbox, Google OAuth, Gemini Keychain & 1-Tap JSON Backup.
+/// Midnight Obsidian Settings Tab: Daily Notifications, Connected Sources, Wake QR, Brain Games, Backup & Factory Reset.
 struct SettingsView: View {
+    @Environment(\.modelContext) private var modelContext
+
     @ObservedObject private var alarmEngine = AlarmEngine.shared
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
+    @ObservedObject private var dailyNotificationManager = DailyNotificationManager.shared
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
     @ObservedObject private var googleAuth = GoogleAuthService.shared
+
+    // Daily Notification Studio & Apple Calendar Filter
+    @State private var showingNotificationStudio: Bool = false
+    @State private var showingAppleCalendarFilter: Bool = false
+
+    // Factory Reset (Two-Step Alert)
+    @State private var showingResetConfirmationStep1: Bool = false
+    @State private var showingResetConfirmationStep2: Bool = false
+    @State private var resetSuccessBanner: String? = nil
 
     // Wake QR / Barcode State
     @State private var isWakeQRRegistered: Bool = WakeQRStorage.isRegistered
@@ -55,11 +68,27 @@ struct SettingsView: View {
                             Text("Settings")
                                 .font(.system(size: 32, weight: .bold, design: .rounded))
                                 .foregroundStyle(Color.white)
-                            Text("Integrations, Missions & Backup")
+                            Text("Notifications, Sources, Backup & Controls")
                                 .font(.system(size: 13, weight: .medium, design: .rounded))
                                 .foregroundStyle(DailyOSTheme.eyebrow)
                         }
                         .padding(.top, 6)
+
+                        if let resetSuccessBanner {
+                            HStack(spacing: 10) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundStyle(DailyOSTheme.emerald)
+                                Text(resetSuccessBanner)
+                                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.emerald)
+                                Spacer()
+                            }
+                            .padding(14)
+                            .ambientCard(accent: DailyOSTheme.emerald, cornerRadius: 16, washOpacity: 0.12)
+                        }
+
+                        // 0. Daily Notifications Studio
+                        dailyNotificationsEntryCard
 
                         // 1. Wake-Up QR / Barcode Registration
                         wakeQRCard
@@ -67,7 +96,7 @@ struct SettingsView: View {
                         // 2. Test Solar-Orange Wake Screen & Stage-2 Brain Games
                         wakeAndBrainSandboxCard
 
-                        // 3. Direct Google Calendar & Google Tasks Integration (OAuth 2.0 + PKCE)
+                        // 3. Connected Sources (Google Calendar & Tasks + Optional Apple Calendar)
                         googleIntegrationCard
 
                         // 4. Gemini 2.5 Flash AI Vision Keychain
@@ -78,6 +107,9 @@ struct SettingsView: View {
 
                         // 6. Permissions & System Status
                         permissionsStatusCard
+
+                        // 7. Danger Zone (Two-Step Factory Reset)
+                        dangerZoneCard
                     }
                     .padding(.horizontal, 18)
                     .padding(.bottom, 34)
@@ -100,6 +132,36 @@ struct SettingsView: View {
                     WakeQRStorage.registeredCode = scannedPayload
                     refreshQRState()
                 }
+            }
+            .sheet(isPresented: $showingNotificationStudio) {
+                NotificationStudioView()
+            }
+            .sheet(isPresented: $showingAppleCalendarFilter) {
+                AppleCalendarFilterSheet()
+            }
+            .alert("Reset Whole App?", isPresented: $showingResetConfirmationStep1) {
+                Button("Cancel", role: .cancel) {}
+                Button("Continue", role: .destructive) {
+                    showingResetConfirmationStep2 = true
+                }
+            } message: {
+                Text("You are about to erase all DailyOS data and return to factory defaults.")
+            }
+            .alert("Reset Everything?", isPresented: $showingResetConfirmationStep2) {
+                Button("Cancel", role: .cancel) {}
+                Button("Erase Everything", role: .destructive) {
+                    AppResetManager.performFactoryReset(modelContext: modelContext)
+                    refreshQRState()
+                    googleClientIDInput = ""
+                    geminiKeyInput = ""
+                    offlineFallbackEnabled = false
+                    defaultReflexThresholdMs = WakeQRStorage.defaultReflexThresholdMs
+                    backupStatusMessage = nil
+                    keyStatusMessage = nil
+                    resetSuccessBanner = "DailyOS reset to factory defaults"
+                }
+            } message: {
+                Text("This permanently erases all habits, logs, alarms, focus sessions, streak freezes, custom notifications, and connected accounts. This cannot be undone.")
             }
             .fullScreenCover(item: $practiceBrainGame) { game in
                 BrainGameContainerView(
@@ -161,6 +223,44 @@ struct SettingsView: View {
         .preferredColorScheme(.dark)
         .environment(\.calendar, ISOWeekCalendar.current)
         .environment(\.locale, Locale(identifier: "en_GB"))
+    }
+
+    // MARK: - 0. Daily Notifications Studio Card
+
+    private var dailyNotificationsEntryCard: some View {
+        let enabledSamples = dailyNotificationManager.sampleTemplates.filter(\.isEnabled).count
+        let enabledCustom = dailyNotificationManager.customNotifications.filter(\.isEnabled).count
+        let totalActive = enabledSamples + enabledCustom
+
+        return Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showingNotificationStudio = true
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("DAILY NOTIFICATIONS")
+                    .eyebrowStyle()
+
+                HStack(spacing: 12) {
+                    iconBadge("bell.badge.fill", color: DailyOSTheme.skyGlow)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Evening Momentum & Custom Alerts")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.white)
+                        Text("\(totalActive) active • Dynamic {done}/{total}, {percent}%, {streak}")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                }
+            }
+            .padding(18)
+            .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.08)
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - 1. Wake-Up QR Card
@@ -304,11 +404,11 @@ struct SettingsView: View {
         .ambientCard(accent: DailyOSTheme.solarAccent, cornerRadius: 22, washOpacity: 0.06)
     }
 
-    // MARK: - 3. Google Integration & Calendar Sources Card
+    // MARK: - 3. Connected Sources (Google Calendar & Tasks + Apple Calendar)
 
     private var googleIntegrationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("GOOGLE INTEGRATION & CALENDARS")
+            Text("CONNECTED SOURCES")
                 .eyebrowStyle()
 
             HStack(spacing: 12) {
@@ -378,6 +478,24 @@ struct SettingsView: View {
 
                 if googleAuth.isConnected {
                     Button {
+                        Task { await focusManager.syncAllSources() }
+                    } label: {
+                        Group {
+                            if focusManager.isSyncingGoogle {
+                                ProgressView().tint(DailyOSTheme.skyGlow)
+                            } else {
+                                Text("Sync Now")
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.skyGlow)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(DailyOSTheme.skyGlow.opacity(0.14), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
                         googleAuth.signOut()
                         Task { await focusManager.syncAllSources() }
                     } label: {
@@ -435,6 +553,24 @@ struct SettingsView: View {
             .font(.system(size: 14, weight: .medium, design: .rounded))
             .foregroundStyle(Color.white)
             .tint(Color(hex: "#A78BFA"))
+
+            if focusManager.appleCalendarSyncEnabled && focusManager.isAppleCalendarAuthorized {
+                Button {
+                    showingAppleCalendarFilter = true
+                } label: {
+                    HStack {
+                        Label("Filter Apple Calendars (\(focusManager.trackedAppleCalendarIDs.count) tracked)", systemImage: "line.3.horizontal.decrease.circle")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(hex: "#A78BFA"))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                    }
+                    .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+            }
         }
         .padding(18)
         .ambientCard(cornerRadius: 22)
@@ -696,6 +832,39 @@ struct SettingsView: View {
         .ambientCard(cornerRadius: 22)
     }
 
+    // MARK: - 7. Danger Zone (Two-Step Factory Reset)
+
+    private var dangerZoneCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("DANGER ZONE")
+                .eyebrowStyle()
+
+            Button {
+                UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+                showingResetConfirmationStep1 = true
+            } label: {
+                HStack(spacing: 12) {
+                    iconBadge("trash.fill", color: Color(hex: "#FF6B6B"))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Reset Whole App")
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color(hex: "#FF6B6B"))
+                        Text("Erase all habits, logs, alarms, focus blocks & accounts")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color(hex: "#FF6B6B").opacity(0.75))
+                }
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(18)
+        .ambientCard(accent: Color(hex: "#FF6B6B"), cornerRadius: 22, washOpacity: 0.08)
+    }
+
     // MARK: - Helpers
 
     private func iconBadge(_ icon: String, color: Color) -> some View {
@@ -726,8 +895,8 @@ struct SettingsView: View {
     }
 
     private var installedVersionDisplay: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.4.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "14"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.5.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "15"
         return "v\(short) (Build \(build))"
     }
 

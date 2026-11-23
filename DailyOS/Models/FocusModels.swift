@@ -174,6 +174,7 @@ struct AlarmBackupDTO: Codable {
     var isEnabled: Bool
     var repeatDaysRaw: String
     var toneRaw: String
+    var soundID: String?
     var missionTypeRaw: String
     var repGoal: Int
     var stepGoal: Int

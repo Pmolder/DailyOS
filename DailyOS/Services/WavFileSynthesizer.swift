@@ -193,7 +193,7 @@ enum WavFileSynthesizer {
     }
 
     /// Encodes 16-bit signed mono PCM samples into a standard 44-byte RIFF WAVE container.
-    private static func encodePCM16MonoWav(samples: [Int16], sampleRate: Int) -> Data {
+    static func encodePCM16MonoWav(samples: [Int16], sampleRate: Int) -> Data {
         let numChannels: UInt16 = 1
         let bitsPerSample: UInt16 = 16
         let byteRate = UInt32(sampleRate) * UInt32(numChannels) * UInt32(bitsPerSample / 8)
