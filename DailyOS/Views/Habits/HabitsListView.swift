@@ -506,7 +506,7 @@ struct HabitsListView: View {
 
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 6) {
-                            Text(type == .morning ? "MORNING SPOTLIGHT" : "NIGHT SPOTLIGHT")
+                            Text(type == .morning ? "☀️ MORNING SPOTLIGHT" : "🌙 NIGHT SPOTLIGHT")
                                 .font(.system(size: 10, weight: .black, design: .rounded))
                                 .tracking(1.1)
                                 .foregroundStyle(accent)
