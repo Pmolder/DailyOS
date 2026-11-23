@@ -31,8 +31,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patrik.dailyos
         PRODUCT_NAME: DailyOS
-        MARKETING_VERSION: "3.5.0"
-        CURRENT_PROJECT_VERSION: "15"
+        MARKETING_VERSION: "3.6.0"
+        CURRENT_PROJECT_VERSION: "16"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: DailyOS/Info.plist
         CODE_SIGN_ENTITLEMENTS: DailyOS/DailyOS.entitlements
@@ -81,8 +81,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.patrik.dailyos.widgets
         PRODUCT_NAME: DailyOSWidgets
-        MARKETING_VERSION: "3.5.0"
-        CURRENT_PROJECT_VERSION: "15"
+        MARKETING_VERSION: "3.6.0"
+        CURRENT_PROJECT_VERSION: "16"
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: DailyOSWidgets/Info.plist
         CODE_SIGN_ENTITLEMENTS: DailyOSWidgets/DailyOSWidgets.entitlements

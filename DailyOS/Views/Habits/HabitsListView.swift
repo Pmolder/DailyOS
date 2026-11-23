@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 /// "Every habit. One glance." — Rebuilt Habits Tab matching the Midnight Obsidian & Ambient Glow design language.
 struct HabitsListView: View {
@@ -14,6 +15,16 @@ struct HabitsListView: View {
     @Query(sort: [SortDescriptor(\HabitLog.date, order: .reverse)])
     private var allLogs: [HabitLog]
 
+    @Query(
+        sort: [
+            SortDescriptor(\RoutineChecklistItem.sortOrder, order: .forward),
+            SortDescriptor(\RoutineChecklistItem.createdAt, order: .forward)
+        ]
+    ) private var allRoutineItems: [RoutineChecklistItem]
+
+    @Query private var allRoutineLogs: [RoutineChecklistLog]
+    @Query private var allFocusTasks: [FocusTaskItem]
+
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
 
     @State private var isScoreCardExpanded: Bool = true
@@ -21,14 +32,35 @@ struct HabitsListView: View {
     @State private var showingStreakSheet: Bool = false
     @State private var showingAnalyticsSheet: Bool = false
     @State private var showingNotificationStudio: Bool = false
+    @State private var activeRoutineSheet: RoutineType? = nil
     @State private var quantityAdjustHabit: HabitItem?
+
+    // Drag-and-drop & Reorder Mode State
+    @State private var draggingHabitID: UUID? = nil
+    @State private var isReorderMode: Bool = false
+    @State private var primePulse: Bool = false
 
     private var activeHabits: [HabitItem] {
         allHabits.filter { !$0.isArchived }
     }
 
+    private var todayKey: String {
+        HabitItem.dateKey(for: Date())
+    }
+
+    private var todayCompletedRoutineIDs: Set<UUID> {
+        Set(allRoutineLogs.filter { $0.dayKey == todayKey }.map(\.itemID))
+    }
+
+    private func routineCounts(for type: RoutineType) -> (completed: Int, total: Int) {
+        let items = allRoutineItems.filter { $0.routineType == type }
+        let done = items.filter { todayCompletedRoutineIDs.contains($0.id) }.count
+        return (done, items.count)
+    }
+
     private var todayScore: TodayScoreSummary {
-        HabitMetricsEngine.todayScoreSummary(habits: activeHabits, allLogs: allLogs)
+        let todaysTasks = allFocusTasks.filter { $0.dayKey == todayKey }
+        return HabitMetricsEngine.todayScoreSummary(habits: activeHabits, allLogs: allLogs, todayTasks: todaysTasks)
     }
 
     private var globalStreak: GlobalStreakSummary {
@@ -51,27 +83,40 @@ struct HabitsListView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 16) {
                         // 1. Top Header Bar
-                        HStack(alignment: .center, spacing: 10) {
+                        HStack(alignment: .center, spacing: 7) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text("Habits")
-                                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                                    .font(.system(size: 30, weight: .bold, design: .rounded))
                                     .foregroundStyle(.white)
                                 Text(formattedTodaySubtitle)
-                                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                                    .font(.system(size: 12, weight: .medium, design: .rounded))
                                     .foregroundStyle(DailyOSTheme.eyebrow)
                             }
 
-                            Spacer()
+                            Spacer(minLength: 4)
 
                             // Analytics / Stats Circular Button
                             if !activeHabits.isEmpty {
-                                FrostedCircleButton(icon: "chart.xyaxis.line", size: 38) {
+                                FrostedCircleButton(icon: "chart.xyaxis.line", size: 34) {
                                     showingAnalyticsSheet = true
                                 }
                             }
 
+                            // Reorder Mode Fallback Button (when 2+ habits exist)
+                            if activeHabits.count > 1 {
+                                FrostedCircleButton(
+                                    icon: isReorderMode ? "checkmark" : "arrow.up.arrow.down",
+                                    size: 34,
+                                    tint: isReorderMode ? DailyOSTheme.skyGlow : Color.white
+                                ) {
+                                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                        isReorderMode.toggle()
+                                    }
+                                }
+                            }
+
                             // Daily Notification Studio Circular Bell Button
-                            FrostedCircleButton(icon: "bell.badge", size: 38) {
+                            FrostedCircleButton(icon: "bell.badge", size: 34) {
                                 showingNotificationStudio = true
                             }
 
@@ -80,24 +125,24 @@ struct HabitsListView: View {
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                                 showingStreakSheet = true
                             } label: {
-                                HStack(spacing: 5) {
+                                HStack(spacing: 4) {
                                     Image(systemName: "flame.fill")
-                                        .font(.system(size: 13, weight: .bold))
+                                        .font(.system(size: 12, weight: .bold))
                                         .foregroundStyle(Color(hex: "#FF8C42"))
                                     Text("\(globalStreak.currentStreak)")
-                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .font(.system(size: 13, weight: .bold, design: .rounded))
                                         .monospacedDigit()
                                         .foregroundStyle(.white)
                                 }
-                                .padding(.horizontal, 12)
-                                .frame(height: 38)
+                                .padding(.horizontal, 10)
+                                .frame(height: 34)
                                 .background(DailyOSTheme.buttonSurface, in: Capsule())
                                 .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
                             }
                             .buttonStyle(.plain)
 
                             // Add Habit Circular Button
-                            FrostedCircleButton(icon: "plus", size: 38) {
+                            FrostedCircleButton(icon: "plus", size: 34) {
                                 showingCreateSheet = true
                             }
                         }
@@ -108,6 +153,9 @@ struct HabitsListView: View {
                             summary: todayScore,
                             isExpanded: $isScoreCardExpanded
                         )
+
+                        // 2b. Sun ☀️ & Moon 🌙 Morning & Night Routine Progress-Ring Bar
+                        routineRingsBar
 
                         // 3. Scrollable Habit Cards Feed (Clean Empty State on Fresh Install)
                         if activeHabits.isEmpty {
@@ -141,23 +189,78 @@ struct HabitsListView: View {
                             .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.06)
                         } else {
                             LazyVStack(spacing: 14) {
-                                ForEach(activeHabits) { habit in
+                                ForEach(Array(activeHabits.enumerated()), id: \.element.id) { index, habit in
                                     let logMap = HabitMetricsEngine.logsByDayKey(for: habit.id, allLogs: allLogs)
-                                    NavigationLink {
-                                        HabitDetailView(habit: habit, allHabits: activeHabits, allLogs: allLogs)
-                                    } label: {
-                                        HabitFeedCardView(
-                                            habit: habit,
-                                            logMap: logMap,
-                                            onQuickCheckIn: {
-                                                handleQuickCheckIn(habit, logMap: logMap)
-                                            },
-                                            onLongPressQuantity: {
-                                                quantityAdjustHabit = habit
+                                    let isBeingDragged = draggingHabitID == habit.id
+
+                                    HStack(spacing: 10) {
+                                        if isReorderMode {
+                                            VStack(spacing: 6) {
+                                                Button {
+                                                    moveHabit(at: index, direction: -1)
+                                                } label: {
+                                                    Image(systemName: "chevron.up")
+                                                        .font(.system(size: 12, weight: .bold))
+                                                        .foregroundStyle(index == 0 ? DailyOSTheme.eyebrow.opacity(0.35) : Color.white)
+                                                        .frame(width: 30, height: 30)
+                                                        .background(DailyOSTheme.buttonSurface, in: Circle())
+                                                }
+                                                .buttonStyle(.plain)
+                                                .disabled(index == 0)
+
+                                                Image(systemName: "line.3.horizontal")
+                                                    .font(.system(size: 11, weight: .semibold))
+                                                    .foregroundStyle(DailyOSTheme.eyebrow)
+
+                                                Button {
+                                                    moveHabit(at: index, direction: 1)
+                                                } label: {
+                                                    Image(systemName: "chevron.down")
+                                                        .font(.system(size: 12, weight: .bold))
+                                                        .foregroundStyle(index == activeHabits.count - 1 ? DailyOSTheme.eyebrow.opacity(0.35) : Color.white)
+                                                        .frame(width: 30, height: 30)
+                                                        .background(DailyOSTheme.buttonSurface, in: Circle())
+                                                }
+                                                .buttonStyle(.plain)
+                                                .disabled(index == activeHabits.count - 1)
+                                            }
+                                        }
+
+                                        NavigationLink {
+                                            HabitDetailView(habit: habit, allHabits: activeHabits, allLogs: allLogs)
+                                        } label: {
+                                            HabitFeedCardView(
+                                                habit: habit,
+                                                logMap: logMap,
+                                                onQuickCheckIn: {
+                                                    handleQuickCheckIn(habit, logMap: logMap)
+                                                },
+                                                onLongPressQuantity: {
+                                                    quantityAdjustHabit = habit
+                                                }
+                                            )
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(isReorderMode)
+                                    }
+                                    .opacity(isBeingDragged ? 0.55 : 1.0)
+                                    .scaleEffect(isBeingDragged ? 0.98 : 1.0)
+                                    .onDrag {
+                                        draggingHabitID = habit.id
+                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                        return NSItemProvider(object: habit.id.uuidString as NSString)
+                                    }
+                                    .onDrop(
+                                        of: [UTType.text],
+                                        delegate: HabitReorderDropDelegate(
+                                            targetHabit: habit,
+                                            habits: activeHabits,
+                                            draggingHabitID: $draggingHabitID,
+                                            onReorder: { reordered in
+                                                persistHabitOrder(reordered)
                                             }
                                         )
-                                    }
-                                    .buttonStyle(.plain)
+                                    )
                                 }
                             }
                         }
@@ -175,6 +278,15 @@ struct HabitsListView: View {
             }
             .sheet(isPresented: $showingNotificationStudio) {
                 NotificationStudioView()
+            }
+            .sheet(item: $activeRoutineSheet) { routineType in
+                RoutineChecklistSheet(routineType: routineType)
+            }
+            .onAppear {
+                RoutineChecklistSeeder.seedDefaultsIfNeeded(in: modelContext)
+                withAnimation(.easeInOut(duration: 1.8).repeatForever(autoreverses: true)) {
+                    primePulse = true
+                }
             }
             .sheet(isPresented: $showingAnalyticsSheet) {
                 if let first = activeHabits.first {
@@ -218,6 +330,147 @@ struct HabitsListView: View {
         }
 
         Task { await notificationScheduler.rescheduleAll() }
+    }
+
+    // MARK: - Sun & Moon Routine Progress-Ring Strip
+
+    private var routineRingsBar: some View {
+        HStack(spacing: 12) {
+            routineRingPill(type: .morning)
+            routineRingPill(type: .night)
+        }
+    }
+
+    private func routineRingPill(type: RoutineType) -> some View {
+        let counts = routineCounts(for: type)
+        let ratio = counts.total > 0 ? Double(counts.completed) / Double(counts.total) : 0.0
+        let isComplete = counts.total > 0 && counts.completed == counts.total
+        let accent = type.accentColor
+        let shouldPulse = type.isCurrentlyPrimeWindow && !isComplete && counts.total > 0
+
+        return Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            activeRoutineSheet = type
+        } label: {
+            HStack(spacing: 12) {
+                ZStack(alignment: .bottomTrailing) {
+                    // Circular Obsidian Button + 2.5pt Progress Ring
+                    ZStack {
+                        Circle()
+                            .fill(DailyOSTheme.card)
+                            .frame(width: 46, height: 46)
+
+                        Circle()
+                            .stroke(accent.opacity(shouldPulse ? (primePulse ? 0.30 : 0.14) : 0.16), lineWidth: 2.5)
+                            .frame(width: 46, height: 46)
+
+                        if ratio > 0 {
+                            Circle()
+                                .trim(from: 0, to: ratio)
+                                .stroke(accent, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                                .rotationEffect(.degrees(-90))
+                                .frame(width: 46, height: 46)
+                                .shadow(color: accent.opacity(isComplete ? 0.65 : 0.35), radius: isComplete ? 7 : 4)
+                                .animation(.spring(response: 0.35, dampingFraction: 0.8), value: ratio)
+                        }
+
+                        Image(systemName: type.iconName)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(accent)
+                    }
+
+                    if isComplete {
+                        Circle()
+                            .fill(accent)
+                            .frame(width: 16, height: 16)
+                            .overlay(
+                                Image(systemName: "checkmark")
+                                    .font(.system(size: 8.5, weight: .black))
+                                    .foregroundStyle(DailyOSTheme.canvas)
+                            )
+                            .offset(x: 2, y: 2)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(type.shortLabel)
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                    Text("\(counts.completed)/\(counts.total) done")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(isComplete ? accent : DailyOSTheme.eyebrow)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .ambientCard(
+                accent: (isComplete || shouldPulse) ? accent : nil,
+                cornerRadius: 20,
+                washOpacity: isComplete ? 0.12 : (shouldPulse ? 0.08 : 0.0)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - Habit Reordering Persistence & Widget Sync
+
+    private func moveHabit(at index: Int, direction: Int) {
+        let target = index + direction
+        guard activeHabits.indices.contains(index), activeHabits.indices.contains(target) else { return }
+        var reordered = activeHabits
+        let moved = reordered.remove(at: index)
+        reordered.insert(moved, at: target)
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+            persistHabitOrder(reordered)
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func persistHabitOrder(_ orderedHabits: [HabitItem]) {
+        for (idx, habit) in orderedHabits.enumerated() {
+            habit.sortOrder = idx
+        }
+        try? modelContext.save()
+        SharedModelContainer.shared.save() // Triggers WidgetSyncCoordinator + WidgetCenter.reloadAllTimelines()
+    }
+}
+
+// MARK: - Long-Press Drag-and-Drop Reorder Delegate
+
+private struct HabitReorderDropDelegate: DropDelegate {
+    let targetHabit: HabitItem
+    let habits: [HabitItem]
+    @Binding var draggingHabitID: UUID?
+    let onReorder: ([HabitItem]) -> Void
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedID = draggingHabitID,
+              draggedID != targetHabit.id,
+              let fromIndex = habits.firstIndex(where: { $0.id == draggedID }),
+              let toIndex = habits.firstIndex(where: { $0.id == targetHabit.id }) else {
+            return
+        }
+
+        var updated = habits
+        let moved = updated.remove(at: fromIndex)
+        updated.insert(moved, at: toIndex)
+
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+            onReorder(updated)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingHabitID = nil
+        return true
     }
 }
 

@@ -414,7 +414,11 @@ enum HabitMetricsEngine {
         )
     }
 
-    static func todayScoreSummary(habits: [HabitItem], allLogs: [HabitLog]) -> TodayScoreSummary {
+    static func todayScoreSummary(
+        habits: [HabitItem],
+        allLogs: [HabitLog],
+        todayTasks: [FocusTaskItem] = []
+    ) -> TodayScoreSummary {
         let activeHabits = habits.filter { !$0.isArchived }
         let today = Date()
         let scheduledToday = activeHabits.filter { $0.isScheduled(on: today) }
@@ -431,20 +435,23 @@ enum HabitMetricsEngine {
             }
         }
 
-        let habitRatio = scheduledToday.isEmpty ? 0.0 : (habitScoreSum / Double(scheduledToday.count))
+        let completedTasks = todayTasks.filter(\.isCompleted).count
+        let totalItems = scheduledToday.count + todayTasks.count
+        let combinedScoreSum = habitScoreSum + Double(completedTasks)
+        let combinedRatio = totalItems == 0 ? 0.0 : (combinedScoreSum / Double(totalItems))
         let focusMins = focusMinutesToday
         let wakeDone = isWakeCompletedToday
 
-        // Weight: 75% habits + 15% focus (up to 60m) + 10% wake completion (or 100% habits if only habits active)
+        // Weight: 75% habits+tasks + 15% focus (up to 60m) + 10% wake completion
         let rawScore: Double
-        if scheduledToday.isEmpty {
+        if totalItems == 0 {
             let focusBoost = min(1.0, Double(focusMins) / 60.0) * 60.0
             let wakeBoost = wakeDone ? 40.0 : 0.0
             rawScore = focusBoost + wakeBoost
         } else {
             let focusBoost = min(1.0, Double(focusMins) / 60.0) * 15.0
             let wakeBoost = wakeDone ? 10.0 : 0.0
-            rawScore = (habitRatio * 75.0) + focusBoost + wakeBoost
+            rawScore = (combinedRatio * 75.0) + focusBoost + wakeBoost
         }
 
         let score = max(0, min(100, Int(round(rawScore))))

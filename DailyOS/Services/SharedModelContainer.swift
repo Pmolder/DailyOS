@@ -17,7 +17,10 @@ final class SharedModelContainer {
             HabitItem.self,
             HabitLog.self,
             ManualFocusBlock.self,
-            FocusCheckInLog.self
+            FocusCheckInLog.self,
+            RoutineChecklistItem.self,
+            RoutineChecklistLog.self,
+            FocusTaskItem.self
         ])
 
         let storeURL = Self.persistentStoreURL()
@@ -58,7 +61,10 @@ final class SharedModelContainer {
             HabitItem.self,
             HabitLog.self,
             ManualFocusBlock.self,
-            FocusCheckInLog.self
+            FocusCheckInLog.self,
+            RoutineChecklistItem.self,
+            RoutineChecklistLog.self,
+            FocusTaskItem.self
         ])
         self.container = try! ModelContainer(
             for: fallbackSchema,
@@ -196,6 +202,54 @@ final class SharedModelContainer {
             sortBy: [SortDescriptor(\.timestamp, order: .reverse)]
         )
         return (try? mainContext.fetch(descriptor)) ?? []
+    }
+
+    func fetchRoutineItems(type: RoutineType? = nil) -> [RoutineChecklistItem] {
+        let descriptor = FetchDescriptor<RoutineChecklistItem>(
+            sortBy: [
+                SortDescriptor(\.sortOrder, order: .forward),
+                SortDescriptor(\.createdAt, order: .forward)
+            ]
+        )
+        let all = (try? mainContext.fetch(descriptor)) ?? []
+        if let type {
+            return all.filter { $0.routineType == type }
+        }
+        return all
+    }
+
+    func fetchRoutineLogs(dayKey: String = HabitItem.dateKey()) -> [RoutineChecklistLog] {
+        let descriptor = FetchDescriptor<RoutineChecklistLog>()
+        let all = (try? mainContext.fetch(descriptor)) ?? []
+        return all.filter { $0.dayKey == dayKey }
+    }
+
+    @discardableResult
+    func toggleRoutineLog(itemID: UUID, dayKey: String = HabitItem.dateKey()) -> Bool {
+        let existing = fetchRoutineLogs(dayKey: dayKey).filter { $0.itemID == itemID }
+        if !existing.isEmpty {
+            for log in existing {
+                mainContext.delete(log)
+            }
+            save()
+            return false
+        } else {
+            let newLog = RoutineChecklistLog(itemID: itemID, dayKey: dayKey)
+            mainContext.insert(newLog)
+            save()
+            return true
+        }
+    }
+
+    func fetchFocusTasks(dayKey: String? = nil) -> [FocusTaskItem] {
+        let descriptor = FetchDescriptor<FocusTaskItem>(
+            sortBy: [SortDescriptor(\.createdAt, order: .forward)]
+        )
+        let all = (try? mainContext.fetch(descriptor)) ?? []
+        if let dayKey {
+            return all.filter { $0.dayKey == dayKey }
+        }
+        return all
     }
 
     func save() {

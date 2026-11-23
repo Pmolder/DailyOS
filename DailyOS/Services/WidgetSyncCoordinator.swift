@@ -89,7 +89,8 @@ enum WidgetSyncCoordinator {
             )
         }
 
-        let score = HabitMetricsEngine.todayScoreSummary(habits: allHabits, allLogs: allLogs)
+        let todayTasks = store.fetchFocusTasks(dayKey: todayKey)
+        let score = HabitMetricsEngine.todayScoreSummary(habits: allHabits, allLogs: allLogs, todayTasks: todayTasks)
         let globalStreak = HabitMetricsEngine.globalStreakSummary(habits: allHabits, allLogs: allLogs)
 
         let snapshot = WidgetSnapshot(

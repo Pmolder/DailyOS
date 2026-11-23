@@ -26,7 +26,7 @@ jobs:
         id: meta
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          VERSION="3.5.0"
+          VERSION="3.6.0"
           BUILD_NUM="${{ github.run_number }}"
           IPA_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}.ipa"
           ARTIFACT_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}"
@@ -96,7 +96,7 @@ jobs:
           fi
           echo "OK: DailyOS and DailyOSWidgets versions match (${APP_SHORT} b${APP_VER})"
 
-          echo "=== Verifying v3.5 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
+          echo "=== Verifying v3.6 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
           python3 - <<'EOF'
           from pathlib import Path
           import sys
@@ -116,6 +116,8 @@ jobs:
               "Preview Solar-Orange Wake Screen",
               "Daily Notifications",
               "Main Character Morning",
+              "Take cold shower",
+              "Review tomorrow's plan",
           ]
           forbidden = [
               "AI Camera Pushups",
@@ -123,7 +125,7 @@ jobs:
 
           for item in required:
               if not has_string(item):
-                  print(f"ERROR: Missing expected v3.5 string in binary: {item}")
+                  print(f"ERROR: Missing expected v3.6 string in binary: {item}")
                   sys.exit(1)
               print(f"OK (found): {item}")
 

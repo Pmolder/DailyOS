@@ -9,10 +9,11 @@ import UIKit
 @MainActor
 enum AppResetManager {
     static func performFactoryReset(modelContext: ModelContext) {
-        // 1. Stop any running audio, keep-alive, or focus alarms
+        // 1. Stop any running audio, keep-alive, Deep Work timer, or focus alarms
         AlarmAudioManager.shared.stopPreview()
         AlarmAudioManager.shared.stopFocusWarning()
         AlarmAudioManager.shared.stopSilentKeepAlive(reEnableIdleTimer: true)
+        DeepWorkTimerController.shared.prepare(title: "DEEP WORK", minutes: 45, cue: "", autoStart: false)
 
         // 2. Delete all SwiftData records across every registered @Model type
         try? modelContext.delete(model: HabitItem.self)
@@ -20,6 +21,9 @@ enum AppResetManager {
         try? modelContext.delete(model: AlarmItem.self)
         try? modelContext.delete(model: ManualFocusBlock.self)
         try? modelContext.delete(model: FocusCheckInLog.self)
+        try? modelContext.delete(model: RoutineChecklistItem.self)
+        try? modelContext.delete(model: RoutineChecklistLog.self)
+        try? modelContext.delete(model: FocusTaskItem.self)
         try? modelContext.save()
         SharedModelContainer.shared.save()
 

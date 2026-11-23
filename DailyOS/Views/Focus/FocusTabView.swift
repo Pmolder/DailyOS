@@ -3,66 +3,182 @@ import SwiftData
 import EventKit
 import Combine
 
-/// Tab 3: Pure Focus Tab — 100% Dedicated to Deep Work, Ambient Ring Timer, Today's Focus Blocks & Focus Bento Stats.
-/// All Google/Apple Calendar OAuth onboarding lives exclusively in Settings → Connected Sources.
-struct FocusTabView: View {
-    @ObservedObject private var focusManager = FocusAccountabilityManager.shared
+// MARK: - Live Shared Deep Work Timer Controller (Persists When Minimized to Focus Pill Banner)
 
-    @State private var showingScheduleTaskSheet = false
-    @State private var showingCustomDurationSheet = false
+@MainActor
+final class DeepWorkTimerController: ObservableObject {
+    static let shared = DeepWorkTimerController()
 
-    // Inline Deep Work Ring Timer State
-    @State private var selectedMinutes: Int = 45
-    @State private var customMinutesDraft: Int = 35
-    @State private var focusCueNote: String = ""
-    @State private var isTimerRunning: Bool = false
-    @State private var isTimerPaused: Bool = false
-    @State private var remainingSeconds: Int = 45 * 60
-    @State private var sessionFinishedBanner: String? = nil
+    @Published var isRunning: Bool = false
+    @Published var isPaused: Bool = false
+    @Published var sessionTitle: String = "DEEP WORK"
+    @Published var cueSubtitle: String = ""
+    @Published var totalMinutes: Int = 45
+    @Published var remainingSeconds: Int = 45 * 60
+    @Published var activeTaskID: UUID? = nil
 
-    // Today's Bento Telemetry
-    @State private var focusedMinutesToday: Int = HabitMetricsEngine.focusMinutesToday
-    @State private var completedSessionsToday: Int = HabitMetricsEngine.completedFocusSessionsToday
+    private var timerCancellable: AnyCancellable?
 
-    private let quickDurationPresets: [Int] = [15, 25, 45, 60, 90]
-    private let secondTick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    private var totalSessionSeconds: Int {
-        max(60, selectedMinutes * 60)
+    private init() {
+        timerCancellable = Timer.publish(every: 1, on: .main, in: .common)
+            .autoconnect()
+            .sink { [weak self] _ in
+                self?.tick()
+            }
     }
 
-    private var elapsedSessionSeconds: Int {
-        max(0, totalSessionSeconds - remainingSeconds)
+    var totalSeconds: Int { max(60, totalMinutes * 60) }
+    var elapsedSeconds: Int { max(0, totalSeconds - remainingSeconds) }
+    var isActive: Bool { isRunning || isPaused }
+
+    var progressFraction: Double {
+        guard totalSeconds > 0 else { return 1.0 }
+        if !isActive { return 1.0 }
+        return Double(max(0, remainingSeconds)) / Double(totalSeconds)
     }
 
-    private var timerRingProgress: Double {
-        guard totalSessionSeconds > 0 else { return 0 }
-        if !isTimerRunning && !isTimerPaused {
-            return 1.0
-        }
-        return Double(max(0, remainingSeconds)) / Double(totalSessionSeconds)
-    }
-
-    private var formattedTimerClock: String {
+    var formattedCountdown: String {
         let clamped = max(0, remainingSeconds)
-        let mins = clamped / 60
-        let secs = clamped % 60
-        return String(format: "%02d:%02d", mins, secs)
+        return String(format: "%02d:%02d", clamped / 60, clamped % 60)
     }
 
-    private var todayBlocks: [FocusBlockDisplayItem] {
-        let todayKey = HabitItem.dateKey(for: Date())
+    func prepare(title: String = "DEEP WORK", minutes: Int = 45, cue: String = "", taskID: UUID? = nil, autoStart: Bool = false) {
+        let clamped = max(5, min(240, minutes))
+        sessionTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "DEEP WORK" : title
+        totalMinutes = clamped
+        remainingSeconds = clamped * 60
+        if !cue.isEmpty { cueSubtitle = cue }
+        activeTaskID = taskID
+        isRunning = autoStart
+        isPaused = false
+    }
+
+    func start() {
+        if remainingSeconds <= 0 {
+            remainingSeconds = totalMinutes * 60
+        }
+        isRunning = true
+        isPaused = false
+    }
+
+    func togglePause() {
+        guard isActive else {
+            start()
+            return
+        }
+        isPaused.toggle()
+        isRunning = !isPaused
+    }
+
+    @discardableResult
+    func finishAndLog() -> Int {
+        let logged = elapsedSeconds >= 60 ? max(1, elapsedSeconds / 60) : 0
+        isRunning = false
+        isPaused = false
+        remainingSeconds = totalMinutes * 60
+
+        if logged > 0 {
+            HabitMetricsEngine.addFocusMinutesToday(logged)
+            HabitMetricsEngine.incrementFocusSessionsToday()
+            WidgetSyncCoordinator.syncSnapshotFromStore()
+            Task { await DailyNotificationManager.shared.refreshScheduledNotifications() }
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+        return logged
+    }
+
+    private func tick() {
+        guard isRunning && !isPaused else { return }
+        if remainingSeconds > 1 {
+            remainingSeconds -= 1
+        } else {
+            remainingSeconds = 0
+            let mins = totalMinutes
+            isRunning = false
+            isPaused = false
+            HabitMetricsEngine.addFocusMinutesToday(mins)
+            HabitMetricsEngine.incrementFocusSessionsToday()
+            WidgetSyncCoordinator.syncSnapshotFromStore()
+            Task { await DailyNotificationManager.shared.refreshScheduledNotifications() }
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        }
+    }
+}
+
+// MARK: - Tab 3: Task-First Day Slider & Week Overview Focus Hub
+
+struct FocusTabView: View {
+    private enum FocusViewMode: String, CaseIterable {
+        case day = "Day"
+        case week = "Week"
+    }
+
+    @Environment(\.modelContext) private var modelContext
+    @Query(sort: [SortDescriptor(\FocusTaskItem.createdAt, order: .forward)])
+    private var allTasks: [FocusTaskItem]
+
+    @ObservedObject private var focusManager = FocusAccountabilityManager.shared
+    @ObservedObject private var timerController = DeepWorkTimerController.shared
+
+    @State private var viewMode: FocusViewMode = .day
+    @State private var selectedDate: Date = ISOWeekCalendar.current.startOfDay(for: Date())
+    @State private var weekAnchorDate: Date = ISOWeekCalendar.startOfMondayWeek(for: Date())
+
+    // Sheets
+    @State private var showingNewTaskSheet: Bool = false
+    @State private var newTaskInitialDate: Date = Date()
+    @State private var editingTask: FocusTaskItem? = nil
+    @State private var showingDeepWorkSheet: Bool = false
+
+    private var cal: Calendar { ISOWeekCalendar.current }
+
+    private var selectedDayKey: String {
+        HabitItem.dateKey(for: selectedDate)
+    }
+
+    private var isViewingToday: Bool {
+        cal.isDateInToday(selectedDate)
+    }
+
+    private var currentWeekDates: [Date] {
+        (0..<7).compactMap { cal.date(byAdding: .day, value: $0, to: weekAnchorDate) }
+    }
+
+    private var weekRangeLabel: String {
+        guard let first = currentWeekDates.first, let last = currentWeekDates.last else { return "" }
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = TimeZone.current
+        f.dateFormat = "d MMM"
+        return "\(f.string(from: first)) – \(f.string(from: last))"
+    }
+
+    private func tasks(for date: Date) -> [FocusTaskItem] {
+        let key = HabitItem.dateKey(for: date)
+        return allTasks
+            .filter { $0.dayKey == key }
+            .sorted { lhs, rhs in
+                if lhs.isCompleted != rhs.isCompleted {
+                    return !lhs.isCompleted // Pending first, completed below
+                }
+                if lhs.sortMinutesOfDay != rhs.sortMinutesOfDay {
+                    return lhs.sortMinutesOfDay < rhs.sortMinutesOfDay
+                }
+                return lhs.createdAt < rhs.createdAt
+            }
+    }
+
+    private func syncedBlocks(for date: Date) -> [FocusBlockDisplayItem] {
+        let key = HabitItem.dateKey(for: date)
         return focusManager.upcomingBlocks
-            .filter { $0.dayKey == todayKey }
+            .filter { $0.dayKey == key }
             .sorted { $0.startDate < $1.startDate }
     }
 
-    private var formattedTodaySubtitle: String {
-        let f = DateFormatter()
-        f.calendar = ISOWeekCalendar.current
-        f.timeZone = TimeZone.current
-        f.dateFormat = "EEEE, d MMM"
-        return f.string(from: Date())
+    private func scheduledMinutes(for date: Date) -> Int {
+        let taskMins = tasks(for: date).reduce(0) { $0 + $1.durationMinutes }
+        let syncedMins = syncedBlocks(for: date).reduce(0) { $0 + Int(round($1.durationMinutes)) }
+        return taskMins + syncedMins
     }
 
     var body: some View {
@@ -70,510 +186,843 @@ struct FocusTabView: View {
             ZStack {
                 DailyOSTheme.canvas.ignoresSafeArea()
 
-                ScrollView(showsIndicators: false) {
-                    VStack(spacing: 18) {
-                        // 1. Clean Top Header
-                        HStack(alignment: .center, spacing: 10) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Focus")
-                                    .font(.system(size: 32, weight: .bold, design: .rounded))
-                                    .foregroundStyle(Color.white)
-                                Text(formattedTodaySubtitle)
-                                    .font(.system(size: 13, weight: .medium, design: .rounded))
-                                    .foregroundStyle(DailyOSTheme.eyebrow)
-                            }
-
-                            Spacer()
-
-                            FrostedCircleButton(icon: "plus", size: 38) {
-                                showingScheduleTaskSheet = true
-                            }
-                        }
+                VStack(spacing: 12) {
+                    // 1. Top Header: Focus + Day|Week Switcher + Timer + Add
+                    topHeaderBar
+                        .padding(.horizontal, 18)
                         .padding(.top, 6)
 
-                        // 2. Glowing Deep Work Timer Hero Card
-                        deepWorkHeroCard
-
-                        // 3. Focus Bento Stats (2-Column Dark Cards)
-                        focusBentoStatsRow
-
-                        // 4. Active Scheduled Accountability Block (only when live)
-                        if let active = focusManager.activeFocusBlock {
-                            activeScheduledBlockCard(active)
-                        }
-
-                        // 5. Today's Focus Blocks (Manual + Synced only if already connected in Settings)
-                        todaysFocusBlocksSection
+                    // 2. Pinned Active Deep Work Focus Pill Banner (only when timer is running/paused)
+                    if timerController.isActive {
+                        activeTimerPillBanner
+                            .padding(.horizontal, 18)
+                            .transition(.move(edge: .top).combined(with: .opacity))
                     }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 34)
+
+                    // 3. Main Content: Day View vs Week Overview
+                    if viewMode == .day {
+                        dayModeContent
+                    } else {
+                        weekModeContent
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .onAppear {
-                focusedMinutesToday = HabitMetricsEngine.focusMinutesToday
-                completedSessionsToday = HabitMetricsEngine.completedFocusSessionsToday
-                if !isTimerRunning && !isTimerPaused {
-                    remainingSeconds = selectedMinutes * 60
-                }
                 Task { await focusManager.syncAllSources() }
             }
-            .onReceive(secondTick) { _ in
-                guard isTimerRunning && !isTimerPaused else { return }
-                if remainingSeconds > 1 {
-                    remainingSeconds -= 1
-                } else {
-                    completeDeepWorkSession(loggedMinutes: selectedMinutes)
-                }
+            .sheet(isPresented: $showingNewTaskSheet) {
+                FocusTaskEditorSheet(existingTask: nil, initialDate: newTaskInitialDate)
             }
-            .sheet(isPresented: $showingScheduleTaskSheet) {
-                AddScheduledTaskSheet()
+            .sheet(item: $editingTask) { task in
+                FocusTaskEditorSheet(existingTask: task, initialDate: HabitItem.date(from: task.dayKey) ?? selectedDate)
             }
-            .sheet(isPresented: $showingCustomDurationSheet) {
-                CustomFocusDurationSheet(minutes: $customMinutesDraft) { chosen in
-                    applyDurationSelection(chosen)
-                }
+            .fullScreenCover(isPresented: $showingDeepWorkSheet) {
+                DeepWorkRingFullScreenView(timerController: timerController)
             }
         }
     }
 
-    // MARK: - 1. Glowing Deep Work Timer Hero Card
+    // MARK: - Top Bar: Focus + Day|Week Switcher + Timer + Add
 
-    private var deepWorkHeroCard: some View {
-        VStack(spacing: 18) {
-            // Glowing Circular Progress Ring
-            ZStack {
-                AmbientBloomRing(
-                    progress: timerRingProgress,
-                    color: isTimerRunning && !isTimerPaused ? DailyOSTheme.skyGlow : Color(hex: "#818CF8"),
-                    lineWidth: 13,
-                    diameter: 224
-                )
-
-                VStack(spacing: 6) {
-                    Text(focusManager.activeFocusBlock?.title.uppercased() ?? "DEEP WORK")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                        .tracking(1.8)
-                        .foregroundStyle(DailyOSTheme.eyebrow)
-                        .lineLimit(1)
-                        .frame(maxWidth: 165)
-
-                    Text(formattedTimerClock)
-                        .font(.system(size: 48, weight: .bold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.white)
-                        .contentTransition(.numericText())
-
-                    // Inline Editable Cue Subtitle
-                    TextField(
-                        "",
-                        text: $focusCueNote,
-                        prompt: Text("phone in another room").foregroundStyle(Color.white.opacity(0.30))
-                    )
-                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.72))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 168)
-                }
-            }
-            .padding(.top, 6)
-
-            // Quick Duration Pills (15m, 25m, 45m, 60m, 90m, Custom)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(quickDurationPresets, id: \.self) { mins in
-                        let selected = selectedMinutes == mins
-                        Button {
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                            applyDurationSelection(mins)
-                        } label: {
-                            Text("\(mins)m")
-                                .font(.system(size: 12, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(selected ? Color.black : Color.white.opacity(0.82))
-                                .padding(.horizontal, 13)
-                                .padding(.vertical, 8)
-                                .background(
-                                    selected ? DailyOSTheme.skyGlow : DailyOSTheme.inputSurface,
-                                    in: Capsule()
-                                )
-                                .overlay(
-                                    Capsule().stroke(selected ? DailyOSTheme.skyGlow : DailyOSTheme.hairline, lineWidth: 1)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isTimerRunning)
-                        .opacity(isTimerRunning ? 0.55 : 1.0)
-                    }
-
-                    let isCustomSelected = !quickDurationPresets.contains(selectedMinutes)
-                    Button {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        customMinutesDraft = selectedMinutes
-                        showingCustomDurationSheet = true
-                    } label: {
-                        Text(isCustomSelected ? "\(selectedMinutes)m" : "Custom")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundStyle(isCustomSelected ? Color.black : Color.white.opacity(0.82))
-                            .padding(.horizontal, 13)
-                            .padding(.vertical, 8)
-                            .background(
-                                isCustomSelected ? DailyOSTheme.skyGlow : DailyOSTheme.inputSurface,
-                                in: Capsule()
-                            )
-                            .overlay(
-                                Capsule().stroke(isCustomSelected ? DailyOSTheme.skyGlow : DailyOSTheme.hairline, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isTimerRunning)
-                    .opacity(isTimerRunning ? 0.55 : 1.0)
-                }
-            }
-
-            // Start / Pause / Finish / Optional Photo Proof Controls
-            HStack(spacing: 12) {
-                if isTimerRunning || isTimerPaused {
-                    Button {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        isTimerPaused.toggle()
-                    } label: {
-                        Label(isTimerPaused ? "Resume" : "Pause", systemImage: isTimerPaused ? "play.fill" : "pause.fill")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(DailyOSTheme.skyGlow, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        let logged = max(1, elapsedSessionSeconds / 60)
-                        completeDeepWorkSession(loggedMinutes: elapsedSessionSeconds >= 60 ? logged : 0)
-                    } label: {
-                        Label("Finish", systemImage: "checkmark")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.white)
-                            .padding(.horizontal, 20)
-                            .padding(.vertical, 14)
-                            .background(DailyOSTheme.buttonSurface, in: Capsule())
-                            .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    Button {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        sessionFinishedBanner = nil
-                        remainingSeconds = selectedMinutes * 60
-                        isTimerRunning = true
-                        isTimerPaused = false
-                    } label: {
-                        Label("Start Deep Work", systemImage: "play.fill")
-                            .font(.system(size: 15, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.black)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(DailyOSTheme.skyGlow, in: Capsule())
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                // Optional Gemini Camera Photo Proof Button
-                FrostedCircleButton(icon: "camera.fill", size: 46, tint: DailyOSTheme.solarAccent) {
-                    if let active = focusManager.activeFocusBlock {
-                        focusManager.openVoluntaryProofCapture(for: active)
-                    } else {
-                        focusManager.activateFocusTaskAlarm(
-                            taskID: "deep_work_proof_\(Int(Date().timeIntervalSince1970))",
-                            taskTitle: focusCueNote.isEmpty ? "Deep Work Session" : focusCueNote,
-                            taskNotes: "Optional photo proof for \(selectedMinutes)m Deep Work block",
-                            taskSource: "Deep Work",
-                            evasionPenalty: false
-                        )
-                    }
-                }
-            }
-
-            if let banner = sessionFinishedBanner {
-                HStack(spacing: 8) {
-                    Image(systemName: "checkmark.seal.fill")
-                        .foregroundStyle(DailyOSTheme.emerald)
-                    Text(banner)
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .foregroundStyle(DailyOSTheme.emerald)
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(DailyOSTheme.emerald.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            }
-        }
-        .padding(20)
-        .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 26, washOpacity: 0.11)
-    }
-
-    // MARK: - 2. Focus Bento Stats (2-Column Dark Cards)
-
-    private var focusBentoStatsRow: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: "timer")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(DailyOSTheme.skyGlow)
-                        .frame(width: 30, height: 30)
-                        .background(DailyOSTheme.skyGlow.opacity(0.15), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    Spacer()
-                }
-
-                Text("\(focusedMinutesToday) min")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.white)
-
-                Text("FOCUSED TODAY")
-                    .eyebrowStyle()
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 20, washOpacity: 0.06)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(DailyOSTheme.emerald)
-                        .frame(width: 30, height: 30)
-                        .background(DailyOSTheme.emerald.opacity(0.15), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    Spacer()
-                }
-
-                Text("\(completedSessionsToday)")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(Color.white)
-
-                Text("COMPLETED SESSIONS")
-                    .eyebrowStyle()
-            }
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .ambientCard(accent: DailyOSTheme.emerald, cornerRadius: 20, washOpacity: 0.06)
-        }
-    }
-
-    // MARK: - 3. Active Scheduled Block Card
-
-    private func activeScheduledBlockCard(_ block: FocusBlockDisplayItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(focusManager.isCurrentBlockCleared ? DailyOSTheme.emerald : DailyOSTheme.solarAccent)
-                        .frame(width: 7, height: 7)
-                    Text("ACTIVE BLOCK • \(block.source.badgeTitle)")
-                        .eyebrowStyle()
-                }
-                Spacer()
-                Text(block.timeRangeText)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(DailyOSTheme.eyebrow)
-            }
-
-            Text(block.title)
-                .font(.system(size: 18, weight: .bold, design: .rounded))
+    private var topHeaderBar: some View {
+        HStack(spacing: 10) {
+            Text("Focus")
+                .font(.system(size: 30, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.white)
 
-            if !focusManager.isCurrentBlockCleared {
-                HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(focusManager.completedCheckInsForCurrentBlock == 0
-                             ? "INITIAL PROOF WINDOW (5M)"
-                             : "NEXT 30M CHECK-IN")
-                            .eyebrowStyle()
-                        Text(formatCountdown(focusManager.secondsUntilCheckInDeadline))
-                            .font(.system(size: 24, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(focusManager.secondsUntilCheckInDeadline <= 60 ? Color(hex: "#FF6B6B") : DailyOSTheme.emerald)
-                    }
-                    Spacer()
+            Spacer(minLength: 4)
+
+            // Compact Day | Week Segmented Pill
+            HStack(spacing: 2) {
+                ForEach(FocusViewMode.allCases, id: \.self) { mode in
+                    let active = viewMode == mode
                     Button {
-                        focusManager.openVoluntaryProofCapture(for: block)
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                            viewMode = mode
+                        }
                     } label: {
-                        Label("Photo Proof", systemImage: "camera.fill")
-                            .font(.system(size: 13, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.black)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 10)
-                            .background(DailyOSTheme.solarAccent, in: Capsule())
+                        Text(mode.rawValue)
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(active ? Color.black : DailyOSTheme.eyebrow)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(active ? Color.white : Color.clear, in: Capsule())
                     }
                     .buttonStyle(.plain)
                 }
-            } else {
-                Text(focusManager.checkInPhaseLabel)
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(DailyOSTheme.emerald)
+            }
+            .padding(3)
+            .background(DailyOSTheme.buttonSurface, in: Capsule())
+            .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+
+            // Quick-Launch Deep Work Timer Button
+            FrostedCircleButton(
+                icon: "timer",
+                size: 36,
+                tint: timerController.isActive ? DailyOSTheme.emerald : DailyOSTheme.skyGlow
+            ) {
+                showingDeepWorkSheet = true
+            }
+
+            // Quick Add Task Button
+            FrostedCircleButton(icon: "plus", size: 36) {
+                newTaskInitialDate = selectedDate
+                showingNewTaskSheet = true
             }
         }
-        .padding(16)
-        .ambientCard(
-            accent: focusManager.isCurrentBlockCleared ? DailyOSTheme.emerald : DailyOSTheme.solarAccent,
-            cornerRadius: 20,
-            washOpacity: 0.09
-        )
     }
 
-    // MARK: - 4. Today's Focus Blocks Section
+    // MARK: - Pinned Active Deep Work Banner
 
-    private var todaysFocusBlocksSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("TODAY'S FOCUS BLOCKS")
-                    .eyebrowStyle()
-                Spacer()
-                Button {
-                    showingScheduleTaskSheet = true
-                } label: {
-                    Label("Add Focus Block", systemImage: "plus")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(DailyOSTheme.skyGlow)
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 6)
-                        .background(DailyOSTheme.skyGlow.opacity(0.14), in: Capsule())
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 2)
+    private var activeTimerPillBanner: some View {
+        Button {
+            showingDeepWorkSheet = true
+        } label: {
+            HStack(spacing: 12) {
+                Circle()
+                    .fill(timerController.isPaused ? DailyOSTheme.solarAccent : DailyOSTheme.skyGlow)
+                    .frame(width: 9, height: 9)
+                    .shadow(color: DailyOSTheme.skyGlow.opacity(0.75), radius: 5)
 
-            if todayBlocks.isEmpty {
-                VStack(spacing: 10) {
-                    Text("No Focus Blocks Today")
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                    Text("Start the Deep Work timer above or schedule a timed focus block with optional AI photo proof.")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(timerController.sessionTitle.uppercased())
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .tracking(1.0)
                         .foregroundStyle(DailyOSTheme.eyebrow)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
-                .padding(.horizontal, 18)
-                .ambientCard(cornerRadius: 20)
-            } else {
-                VStack(spacing: 10) {
-                    ForEach(todayBlocks) { block in
-                        FocusBlockCardRow(
-                            block: block,
-                            isCurrent: focusManager.activeFocusBlock?.id == block.id,
-                            onDelete: block.manualBlockID.map { manualID in
-                                { focusManager.deleteScheduledTask(id: manualID) }
-                            }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Timer Helpers
-
-    private func applyDurationSelection(_ mins: Int) {
-        let clamped = max(5, min(180, mins))
-        selectedMinutes = clamped
-        remainingSeconds = clamped * 60
-        isTimerRunning = false
-        isTimerPaused = false
-        sessionFinishedBanner = nil
-    }
-
-    private func completeDeepWorkSession(loggedMinutes: Int) {
-        isTimerRunning = false
-        isTimerPaused = false
-        remainingSeconds = selectedMinutes * 60
-
-        if loggedMinutes > 0 {
-            HabitMetricsEngine.addFocusMinutesToday(loggedMinutes)
-            HabitMetricsEngine.incrementFocusSessionsToday()
-            focusedMinutesToday = HabitMetricsEngine.focusMinutesToday
-            completedSessionsToday = HabitMetricsEngine.completedFocusSessionsToday
-            sessionFinishedBanner = "Logged \(loggedMinutes) min Deep Work session — Today's Score updated."
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            WidgetSyncCoordinator.syncSnapshotFromStore()
-            Task { await DailyNotificationManager.shared.refreshScheduledNotifications() }
-        }
-    }
-
-    private func formatCountdown(_ seconds: Int) -> String {
-        let clamped = max(0, seconds)
-        let mins = clamped / 60
-        let secs = clamped % 60
-        return String(format: "%02d:%02d", mins, secs)
-    }
-}
-
-// MARK: - Custom Duration Sheet
-
-private struct CustomFocusDurationSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Binding var minutes: Int
-    let onApply: (Int) -> Void
-
-    var body: some View {
-        ZStack {
-            DailyOSTheme.canvas.ignoresSafeArea()
-
-            VStack(spacing: 20) {
-                HStack {
-                    FrostedCircleButton(icon: "xmark", size: 36) { dismiss() }
-                    Spacer()
-                    Text("Custom Duration")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                    Spacer()
-                    Color.clear.frame(width: 36, height: 36)
+                        .lineLimit(1)
+                    Text(timerController.isPaused ? "Paused • Tap to expand" : "Deep Work Active • Tap to expand")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.88))
                 }
 
-                Text("\(minutes) min")
-                    .font(.system(size: 46, weight: .bold, design: .rounded))
+                Spacer()
+
+                Text(timerController.formattedCountdown)
+                    .font(.system(size: 19, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .foregroundStyle(DailyOSTheme.skyGlow)
 
-                Stepper("Focus Minutes", value: $minutes, in: 5...180, step: 5)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
-                    .foregroundStyle(Color.white)
-                    .padding(16)
-                    .ambientCard(cornerRadius: 18)
-
-                Spacer()
-
                 Button {
-                    onApply(minutes)
-                    dismiss()
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    timerController.togglePause()
                 } label: {
-                    Text("Set \(minutes) Minutes")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                    Image(systemName: timerController.isPaused ? "play.fill" : "pause.fill")
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Color.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
-                        .background(DailyOSTheme.skyGlow, in: Capsule())
+                        .frame(width: 30, height: 30)
+                        .background(DailyOSTheme.skyGlow, in: Circle())
                 }
                 .buttonStyle(.plain)
             }
-            .padding(20)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 18, washOpacity: 0.14)
         }
-        .presentationDetents([.height(300)])
-        .preferredColorScheme(.dark)
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - DAY VIEW (Monday-First 7-Day Slider + Priority Tasks List)
+
+    private var dayModeContent: some View {
+        let dayTasks = tasks(for: selectedDate)
+        let daySynced = syncedBlocks(for: selectedDate)
+
+        return VStack(spacing: 12) {
+            // 1. Monday-First 7-Day ISO-8601 Week Slider
+            weekSliderCard
+                .padding(.horizontal, 18)
+
+            // 2. Active Calendar Accountability Banner (if live right now)
+            if let active = focusManager.activeFocusBlock {
+                activeAccountabilityBanner(active)
+                    .padding(.horizontal, 18)
+            }
+
+            // 3. Priority To-Do Tasks & Time Blocks (List with native Swipe Actions)
+            if dayTasks.isEmpty && daySynced.isEmpty {
+                ScrollView(showsIndicators: false) {
+                    emptyDayCard
+                        .padding(.horizontal, 18)
+                        .padding(.top, 8)
+                }
+            } else {
+                List {
+                    if !dayTasks.isEmpty {
+                        Section {
+                            ForEach(dayTasks) { task in
+                                FocusTaskCardRow(
+                                    task: task,
+                                    onToggleComplete: {
+                                        toggleTaskCompletion(task)
+                                    },
+                                    onTapEdit: {
+                                        editingTask = task
+                                    },
+                                    onPlayTimer: {
+                                        launchTimer(for: task)
+                                    }
+                                )
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                    Button {
+                                        moveTaskToTomorrow(task)
+                                    } label: {
+                                        Label("Tomorrow", systemImage: "arrow.right.circle")
+                                    }
+                                    .tint(DailyOSTheme.skyGlow)
+                                }
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    Button(role: .destructive) {
+                                        deleteTask(task)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        } header: {
+                            HStack {
+                                Text(dayHeaderTitle(for: selectedDate))
+                                    .eyebrowStyle()
+                                Spacer()
+                                let mins = scheduledMinutes(for: selectedDate)
+                                if mins > 0 {
+                                    Text(formatScheduledHours(mins))
+                                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(DailyOSTheme.skyGlow)
+                                }
+                            }
+                            .textCase(nil)
+                            .padding(.horizontal, 2)
+                        }
+                    }
+
+                    if !daySynced.isEmpty {
+                        Section {
+                            ForEach(daySynced) { block in
+                                SyncedFocusBlockRow(
+                                    block: block,
+                                    isCurrent: focusManager.activeFocusBlock?.id == block.id,
+                                    onPlayTimer: {
+                                        timerController.prepare(
+                                            title: block.title,
+                                            minutes: max(15, Int(round(block.durationMinutes))),
+                                            autoStart: true
+                                        )
+                                        showingDeepWorkSheet = true
+                                    }
+                                )
+                                .listRowBackground(Color.clear)
+                                .listRowSeparator(.hidden)
+                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
+                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                    if let manualID = block.manualBlockID {
+                                        Button(role: .destructive) {
+                                            focusManager.deleteScheduledTask(id: manualID)
+                                        } label: {
+                                            Label("Delete", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
+                        } header: {
+                            Text("CALENDAR & SYNCED BLOCKS")
+                                .eyebrowStyle()
+                                .textCase(nil)
+                                .padding(.horizontal, 2)
+                        }
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+        }
+    }
+
+    // MARK: - Interactive Monday-First Week Slider Card
+
+    private var weekSliderCard: some View {
+        VStack(spacing: 10) {
+            HStack {
+                Button {
+                    shiftWeek(by: -1)
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(0.8))
+                        .frame(width: 28, height: 28)
+                        .background(DailyOSTheme.inputSurface, in: Circle())
+                }
+                .buttonStyle(.plain)
+
+                Text(weekRangeLabel)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .padding(.leading, 4)
+
+                Spacer()
+
+                if !isViewingToday {
+                    Button("Today") {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        let today = cal.startOfDay(for: Date())
+                        selectedDate = today
+                        weekAnchorDate = ISOWeekCalendar.startOfMondayWeek(for: today)
+                    }
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(DailyOSTheme.skyGlow, in: Capsule())
+                    .buttonStyle(.plain)
+                }
+
+                Button {
+                    shiftWeek(by: 1)
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.white.opacity(0.8))
+                        .frame(width: 28, height: 28)
+                        .background(DailyOSTheme.inputSurface, in: Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(currentWeekDates, id: \.self) { day in
+                    let isSelected = cal.isDate(day, inSameDayAs: selectedDate)
+                    let isToday = cal.isDateInToday(day)
+                    let dayTasks = tasks(for: day)
+                    let daySynced = syncedBlocks(for: day)
+                    let totalCount = dayTasks.count + daySynced.count
+                    let allDone = !dayTasks.isEmpty && daySynced.isEmpty && dayTasks.allSatisfy(\.isCompleted)
+
+                    Button {
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        selectedDate = day
+                    } label: {
+                        VStack(spacing: 4) {
+                            Text(shortWeekdayLabel(day))
+                                .font(.system(size: 10, weight: .bold, design: .rounded))
+                                .foregroundStyle(isSelected ? DailyOSTheme.skyGlow : DailyOSTheme.eyebrow)
+
+                            Text(dayNumberLabel(day))
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(isSelected ? Color.white : (isToday ? DailyOSTheme.skyGlow : Color.white.opacity(0.85)))
+
+                            HStack(spacing: 3) {
+                                if totalCount > 0 {
+                                    let dots = min(3, totalCount)
+                                    ForEach(0..<dots, id: \.self) { _ in
+                                        Circle()
+                                            .fill(allDone ? DailyOSTheme.emerald : DailyOSTheme.skyGlow)
+                                            .frame(width: 4.5, height: 4.5)
+                                    }
+                                } else {
+                                    Circle()
+                                        .fill(Color.clear)
+                                        .frame(width: 4.5, height: 4.5)
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(
+                            isSelected ? DailyOSTheme.inputSurface : Color.clear,
+                            in: RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 13, style: .continuous)
+                                .stroke(
+                                    isSelected ? DailyOSTheme.skyGlow : (isToday ? DailyOSTheme.skyGlow.opacity(0.32) : Color.clear),
+                                    lineWidth: isSelected ? 1.5 : 1
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(14)
+        .ambientCard(cornerRadius: 22)
+    }
+
+    // MARK: - WEEK OVERVIEW MODE (Mon–Sun Open Day Scanner)
+
+    private var weekModeContent: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(spacing: 12) {
+                // Week Navigation Header
+                HStack {
+                    Button { shiftWeek(by: -1) } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 34, height: 34)
+                            .background(DailyOSTheme.buttonSurface, in: Circle())
+                            .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+
+                    Spacer()
+
+                    VStack(spacing: 2) {
+                        Text(weekRangeLabel)
+                            .font(.system(size: 16, weight: .bold, design: .rounded))
+                            .foregroundStyle(Color.white)
+                        Text("Tap a day to focus • Tap + to drop a task")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                    }
+
+                    Spacer()
+
+                    Button { shiftWeek(by: 1) } label: {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color.white)
+                            .frame(width: 34, height: 34)
+                            .background(DailyOSTheme.buttonSurface, in: Circle())
+                            .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 18)
+
+                // 7-Day Monday-to-Sunday Overview Cards
+                VStack(spacing: 10) {
+                    ForEach(currentWeekDates, id: \.self) { day in
+                        weekDayOverviewCard(for: day)
+                    }
+                }
+                .padding(.horizontal, 18)
+                .padding(.bottom, 32)
+            }
+        }
+    }
+
+    private func weekDayOverviewCard(for day: Date) -> some View {
+        let dayTasks = tasks(for: day)
+        let daySynced = syncedBlocks(for: day)
+        let mins = scheduledMinutes(for: day)
+        let isToday = cal.isDateInToday(day)
+        let isOpenDay = dayTasks.isEmpty && daySynced.isEmpty
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    selectedDate = day
+                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                        viewMode = .day
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text(weekDayCardHeader(day))
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .foregroundStyle(isToday ? DailyOSTheme.skyGlow : Color.white)
+
+                        if isToday {
+                            Text("TODAY")
+                                .font(.system(size: 9, weight: .black, design: .rounded))
+                                .foregroundStyle(Color.black)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(DailyOSTheme.skyGlow, in: Capsule())
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                // Scheduled Hours or "Open" Badge
+                Text(isOpenDay ? "Open" : "\(formatScheduledHours(mins)) scheduled")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(isOpenDay ? DailyOSTheme.emerald : DailyOSTheme.skyGlow)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 4)
+                    .background(
+                        (isOpenDay ? DailyOSTheme.emerald : DailyOSTheme.skyGlow).opacity(0.14),
+                        in: Capsule()
+                    )
+
+                // Inline + Button to Drop a Task Straight onto This Day
+                Button {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    selectedDate = day
+                    newTaskInitialDate = day
+                    showingNewTaskSheet = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 28, height: 28)
+                        .background(DailyOSTheme.buttonSurface, in: Circle())
+                        .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+
+            // Compact 1-Line Task & Block Previews
+            if !isOpenDay {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(dayTasks) { task in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(task.isCompleted ? DailyOSTheme.emerald : DailyOSTheme.skyGlow)
+                                .frame(width: 6, height: 6)
+                            Text(task.formattedCompactPrefix)
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                            Text("— \(task.title)\(task.trimmedLocation.isEmpty ? "" : " · \(task.trimmedLocation)")")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .strikethrough(task.isCompleted, color: DailyOSTheme.eyebrow)
+                                .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : Color.white.opacity(0.9))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                    }
+
+                    ForEach(daySynced) { block in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(Color(hex: "#A78BFA"))
+                                .frame(width: 6, height: 6)
+                            Text("\(block.timeRangeText)")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                            Text("— \(block.title)")
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .foregroundStyle(Color.white.opacity(0.85))
+                                .lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .ambientCard(accent: isToday ? DailyOSTheme.skyGlow : nil, cornerRadius: 18, washOpacity: 0.08)
+    }
+
+    // MARK: - Empty Day Card & Active Accountability Banner
+
+    private var emptyDayCard: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "checklist")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(DailyOSTheme.skyGlow)
+                .frame(width: 56, height: 56)
+                .background(DailyOSTheme.skyGlow.opacity(0.14), in: Circle())
+
+            Text("Clear Schedule for \(dayShortTitle(for: selectedDate))")
+                .font(.system(size: 17, weight: .bold, design: .rounded))
+                .foregroundStyle(Color.white)
+
+            Text("Add a task with duration & place, or tap the timer icon to launch a Deep Work session.")
+                .font(.system(size: 13, weight: .medium, design: .rounded))
+                .foregroundStyle(DailyOSTheme.eyebrow)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 10)
+
+            HStack(spacing: 10) {
+                Button {
+                    newTaskInitialDate = selectedDate
+                    showingNewTaskSheet = true
+                } label: {
+                    Label("Add Task", systemImage: "plus")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.black)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .background(DailyOSTheme.skyGlow, in: Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    showingDeepWorkSheet = true
+                } label: {
+                    Label("Deep Work", systemImage: "timer")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 11)
+                        .background(DailyOSTheme.buttonSurface, in: Capsule())
+                        .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.top, 4)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+        .padding(.horizontal, 18)
+        .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.06)
+    }
+
+    private func activeAccountabilityBanner(_ block: FocusBlockDisplayItem) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(block.title)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
+                Text(focusManager.checkInPhaseLabel)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .foregroundStyle(focusManager.isCurrentBlockCleared ? DailyOSTheme.emerald : DailyOSTheme.solarAccent)
+            }
+            Spacer()
+            if !focusManager.isCurrentBlockCleared {
+                Button {
+                    focusManager.openVoluntaryProofCapture(for: block)
+                } label: {
+                    Label("Proof", systemImage: "camera.fill")
+                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.black)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(DailyOSTheme.solarAccent, in: Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(12)
+        .ambientCard(
+            accent: focusManager.isCurrentBlockCleared ? DailyOSTheme.emerald : DailyOSTheme.solarAccent,
+            cornerRadius: 16,
+            washOpacity: 0.10
+        )
+    }
+
+    // MARK: - Task Actions
+
+    private func toggleTaskCompletion(_ task: FocusTaskItem) {
+        task.isCompleted.toggle()
+        try? modelContext.save()
+        SharedModelContainer.shared.save()
+        if task.isCompleted {
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        } else {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    private func moveTaskToTomorrow(_ task: FocusTaskItem) {
+        let base = HabitItem.date(from: task.dayKey) ?? selectedDate
+        if let nextDay = cal.date(byAdding: .day, value: 1, to: base) {
+            task.dayKey = HabitItem.dateKey(for: nextDay)
+            if let oldStart = task.startTime,
+               let shiftedStart = cal.date(byAdding: .day, value: 1, to: oldStart) {
+                task.startTime = shiftedStart
+            }
+            try? modelContext.save()
+            SharedModelContainer.shared.save()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
+    }
+
+    private func deleteTask(_ task: FocusTaskItem) {
+        modelContext.delete(task)
+        try? modelContext.save()
+        SharedModelContainer.shared.save()
+    }
+
+    private func launchTimer(for task: FocusTaskItem) {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        let cue = task.trimmedLocation.isEmpty ? task.trimmedNotes : "at \(task.trimmedLocation)"
+        timerController.prepare(
+            title: task.title,
+            minutes: task.durationMinutes,
+            cue: cue,
+            taskID: task.id,
+            autoStart: true
+        )
+        showingDeepWorkSheet = true
+    }
+
+    private func shiftWeek(by weeks: Int) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if let shiftedAnchor = cal.date(byAdding: .day, value: weeks * 7, to: weekAnchorDate) {
+            weekAnchorDate = shiftedAnchor
+        }
+        if let shiftedDay = cal.date(byAdding: .day, value: weeks * 7, to: selectedDate) {
+            selectedDate = shiftedDay
+        }
+    }
+
+    // MARK: - Formatting Helpers (ISO-8601)
+
+    private func shortWeekdayLabel(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = TimeZone.current
+        f.dateFormat = "EEE"
+        return f.string(from: date)
+    }
+
+    private func dayNumberLabel(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = TimeZone.current
+        f.dateFormat = "d"
+        return f.string(from: date)
+    }
+
+    private func dayHeaderTitle(for date: Date) -> String {
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = TimeZone.current
+        f.dateFormat = "EEEE, d MMM"
+        if cal.isDateInToday(date) { return "TODAY • \(f.string(from: date).uppercased())" }
+        if cal.isDateInTomorrow(date) { return "TOMORROW • \(f.string(from: date).uppercased())" }
+        return f.string(from: date).uppercased()
+    }
+
+    private func dayShortTitle(for date: Date) -> String {
+        if cal.isDateInToday(date) { return "Today" }
+        if cal.isDateInTomorrow(date) { return "Tomorrow" }
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = TimeZone.current
+        f.dateFormat = "EEE, d MMM"
+        return f.string(from: date)
+    }
+
+    private func weekDayCardHeader(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.calendar = cal
+        f.timeZone = TimeZone.current
+        f.dateFormat = "EEE d"
+        return f.string(from: date)
+    }
+
+    private func formatScheduledHours(_ mins: Int) -> String {
+        if mins < 60 { return "\(mins)m" }
+        let hours = Double(mins) / 60.0
+        if mins % 60 == 0 {
+            return "\(mins / 60)h"
+        }
+        return String(format: "%.1fh", hours)
     }
 }
 
-// MARK: - Scheduled Focus Block Card Row
+// MARK: - Glanceable Focus Task Card Row
 
-private struct FocusBlockCardRow: View {
+private struct FocusTaskCardRow: View {
+    let task: FocusTaskItem
+    let onToggleComplete: () -> Void
+    let onTapEdit: () -> Void
+    let onPlayTimer: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            // Left: One-Tap Completion Check Circle
+            Button(action: onToggleComplete) {
+                ZStack {
+                    Circle()
+                        .fill(task.isCompleted ? DailyOSTheme.emerald : Color.clear)
+                        .frame(width: 26, height: 26)
+                        .overlay(
+                            Circle()
+                                .stroke(task.isCompleted ? DailyOSTheme.emerald : Color.white.opacity(0.28), lineWidth: 2)
+                        )
+                    if task.isCompleted {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(DailyOSTheme.canvas)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
+            // Center: Bold Title + Time/Duration Pill + Place Pill
+            Button(action: onTapEdit) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(task.title)
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .strikethrough(task.isCompleted, color: DailyOSTheme.eyebrow)
+                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : Color.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    HStack(spacing: 6) {
+                        // Time & Duration Pill
+                        HStack(spacing: 4) {
+                            Image(systemName: task.startTime != nil ? "clock" : "hourglass")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(task.formattedTimeRangeAndDuration)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
+                        }
+                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            (task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow).opacity(0.14),
+                            in: Capsule()
+                        )
+
+                        // Optional Location / Place Pill
+                        if !task.trimmedLocation.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "mappin.and.ellipse")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text(task.trimmedLocation)
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(Color.white.opacity(task.isCompleted ? 0.45 : 0.82))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(DailyOSTheme.inputSurface, in: Capsule())
+                            .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            // Right: Compact Circular Play Button -> Launches Deep Work Timer
+            Button(action: onPlayTimer) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow)
+                    .frame(width: 34, height: 34)
+                    .background(
+                        (task.isCompleted ? DailyOSTheme.inputSurface : DailyOSTheme.skyGlow.opacity(0.16)),
+                        in: Circle()
+                    )
+                    .overlay(Circle().stroke(task.isCompleted ? DailyOSTheme.hairline : DailyOSTheme.skyGlow.opacity(0.35), lineWidth: 1))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(14)
+        .ambientCard(
+            accent: task.isCompleted ? DailyOSTheme.emerald : nil,
+            cornerRadius: 18,
+            washOpacity: 0.06
+        )
+    }
+}
+
+// MARK: - Synced Calendar / Google Tasks Row
+
+private struct SyncedFocusBlockRow: View {
     let block: FocusBlockDisplayItem
     let isCurrent: Bool
-    let onDelete: (() -> Void)?
+    let onPlayTimer: () -> Void
 
     private var sourceColor: Color {
         switch block.source {
@@ -587,68 +1036,225 @@ private struct FocusBlockCardRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: block.source.iconName)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(isCurrent ? DailyOSTheme.emerald : sourceColor)
-                .frame(width: 40, height: 40)
-                .background(
-                    (isCurrent ? DailyOSTheme.emerald : sourceColor).opacity(0.15),
-                    in: RoundedRectangle(cornerRadius: 12, style: .continuous)
-                )
+                .frame(width: 36, height: 36)
+                .background((isCurrent ? DailyOSTheme.emerald : sourceColor).opacity(0.15), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(isCurrent ? DailyOSTheme.emerald : sourceColor)
-                        .frame(width: 6, height: 6)
-                    Text(block.title)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                        .lineLimit(1)
-                    if isCurrent {
-                        Text("ACTIVE")
-                            .font(.system(size: 9, weight: .black, design: .rounded))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(DailyOSTheme.emerald, in: Capsule())
-                            .foregroundStyle(Color.black)
-                    }
-                }
+                Text(block.title)
+                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                    .foregroundStyle(Color.white)
+                    .lineLimit(1)
 
                 HStack(spacing: 6) {
-                    Text(block.timeRangeText)
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                    Text("\(block.timeRangeText) · \(Int(round(block.durationMinutes)))m")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .monospacedDigit()
-                        .foregroundStyle(DailyOSTheme.eyebrow)
-
-                    Text("•")
-                        .font(.caption2)
-                        .foregroundStyle(DailyOSTheme.eyebrow)
-
-                    Text("\(Int(round(block.durationMinutes)))m")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(Color.white.opacity(0.75))
-
-                    Text("•")
-                        .font(.caption2)
                         .foregroundStyle(DailyOSTheme.eyebrow)
 
                     Text(block.source.badgeTitle)
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
                         .foregroundStyle(sourceColor)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(sourceColor.opacity(0.14), in: Capsule())
                 }
             }
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 4)
 
-            if let onDelete {
-                FrostedCircleButton(icon: "trash", size: 34, tint: Color(hex: "#FF6B6B")) {
-                    onDelete()
+            Button(action: onPlayTimer) {
+                Image(systemName: "play.fill")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(sourceColor)
+                    .frame(width: 34, height: 34)
+                    .background(sourceColor.opacity(0.15), in: Circle())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(13)
+        .ambientCard(accent: isCurrent ? DailyOSTheme.emerald : nil, cornerRadius: 18, washOpacity: 0.08)
+    }
+}
+
+// MARK: - Full-Screen Midnight Obsidian Glowing Deep Work Timer View
+
+private struct DeepWorkRingFullScreenView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var timerController: DeepWorkTimerController
+    @ObservedObject private var focusManager = FocusAccountabilityManager.shared
+
+    @State private var loggedBanner: String? = nil
+    private let presets: [Int] = [15, 25, 45, 60, 90]
+
+    var body: some View {
+        ZStack {
+            DailyOSTheme.canvas.ignoresSafeArea()
+
+            RadialGradient(
+                colors: [DailyOSTheme.skyGlow.opacity(0.11), Color.clear],
+                center: .center,
+                startRadius: 40,
+                endRadius: 270
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                // Top Bar (Minimize back to Focus Tab without stopping timer!)
+                HStack {
+                    FrostedCircleButton(icon: "chevron.down", size: 40) {
+                        dismiss()
+                    }
+                    Spacer()
+                    Text(timerController.isActive ? "Minimize anytime" : "Deep Work Timer")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                    Spacer()
+                    Color.clear.frame(width: 40, height: 40)
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 14)
+
+                Spacer()
+
+                // Iconic Glowing Ring + Countdown + Editable Cue
+                ZStack {
+                    AmbientBloomRing(
+                        progress: timerController.progressFraction,
+                        color: timerController.isPaused ? DailyOSTheme.solarAccent : DailyOSTheme.skyGlow,
+                        lineWidth: 14,
+                        diameter: 264
+                    )
+
+                    VStack(spacing: 8) {
+                        Text(timerController.sessionTitle.uppercased())
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .tracking(1.6)
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                            .lineLimit(1)
+                            .frame(maxWidth: 185)
+
+                        Text(timerController.formattedCountdown)
+                            .font(.system(size: 54, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.white)
+                            .contentTransition(.numericText())
+
+                        TextField(
+                            "",
+                            text: $timerController.cueSubtitle,
+                            prompt: Text("phone in another room").foregroundStyle(Color.white.opacity(0.32))
+                        )
+                        .font(.system(size: 13, weight: .medium, design: .rounded))
+                        .foregroundStyle(Color.white.opacity(0.68))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 180)
+                    }
+                }
+
+                // Quick Duration Presets (when idle)
+                if !timerController.isActive {
+                    HStack(spacing: 8) {
+                        ForEach(presets, id: \.self) { mins in
+                            let selected = timerController.totalMinutes == mins
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                timerController.prepare(
+                                    title: timerController.sessionTitle,
+                                    minutes: mins,
+                                    cue: timerController.cueSubtitle,
+                                    autoStart: false
+                                )
+                            } label: {
+                                Text("\(mins)m")
+                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(selected ? Color.black : Color.white.opacity(0.84))
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 9)
+                                    .background(selected ? DailyOSTheme.skyGlow : DailyOSTheme.buttonSurface, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.top, 26)
+                }
+
+                if let loggedBanner {
+                    Text(loggedBanner)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.emerald)
+                        .padding(.top, 14)
+                }
+
+                Spacer()
+
+                // Bottom Controls: Finish / Play-Pause / Optional Gemini Photo Proof
+                HStack(spacing: 28) {
+                    VStack(spacing: 8) {
+                        FrostedCircleButton(icon: "checkmark", size: 54, tint: DailyOSTheme.emerald) {
+                            let logged = timerController.finishAndLog()
+                            if logged > 0 {
+                                loggedBanner = "Logged \(logged)m Deep Work"
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                                    dismiss()
+                                }
+                            } else {
+                                dismiss()
+                            }
+                        }
+                        Text("Finish")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                    }
+
+                    VStack(spacing: 8) {
+                        Button {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            timerController.togglePause()
+                        } label: {
+                            Image(systemName: (timerController.isRunning && !timerController.isPaused) ? "pause.fill" : "play.fill")
+                                .font(.system(size: 22, weight: .bold))
+                                .foregroundStyle(Color.black)
+                                .frame(width: 68, height: 68)
+                                .background(DailyOSTheme.skyGlow, in: Circle())
+                                .shadow(color: DailyOSTheme.skyGlow.opacity(0.35), radius: 14)
+                        }
+                        .buttonStyle(.plain)
+                        Text((timerController.isRunning && !timerController.isPaused) ? "Pause" : (timerController.isPaused ? "Resume" : "Start"))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.8))
+                    }
+
+                    VStack(spacing: 8) {
+                        FrostedCircleButton(icon: "camera.fill", size: 54, tint: DailyOSTheme.solarAccent) {
+                            let title = timerController.sessionTitle
+                            let cue = timerController.cueSubtitle
+                            dismiss()
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                if let active = focusManager.activeFocusBlock {
+                                    focusManager.openVoluntaryProofCapture(for: active)
+                                } else {
+                                    focusManager.activateFocusTaskAlarm(
+                                        taskID: "deep_work_proof_\(Int(Date().timeIntervalSince1970))",
+                                        taskTitle: title,
+                                        taskNotes: cue.isEmpty ? "Deep work photo proof" : cue,
+                                        taskSource: "Deep Work",
+                                        evasionPenalty: false
+                                    )
+                                }
+                            }
+                        }
+                        Text("Proof")
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                    }
+                }
+                .padding(.bottom, 40)
             }
         }
-        .padding(14)
-        .ambientCard(accent: isCurrent ? DailyOSTheme.emerald : nil, cornerRadius: 18, washOpacity: 0.08)
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -966,187 +1572,6 @@ struct FocusTaskAlarmFullScreenView: View {
                 cameraVM.stopSession()
             }
         }
-    }
-}
-
-// MARK: - Native Future Task Scheduling Sheet (Midnight Obsidian Styled)
-
-private struct AddScheduledTaskSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    @State private var title: String = ""
-    @State private var notes: String = ""
-    @State private var taskDate: Date = Date()
-    @State private var startTime: Date = Date()
-    @State private var endTime: Date = Date().addingTimeInterval(60 * 60)
-
-    private var combinedStartDate: Date {
-        combine(date: taskDate, time: startTime)
-    }
-
-    private var combinedEndDate: Date {
-        let candidate = combine(date: taskDate, time: endTime)
-        return candidate > combinedStartDate ? candidate : combinedStartDate.addingTimeInterval(15 * 60)
-    }
-
-    private var durationMinutes: Int {
-        max(15, Int(round(combinedEndDate.timeIntervalSince(combinedStartDate) / 60.0)))
-    }
-
-    private var canSave: Bool {
-        !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        ZStack {
-            DailyOSTheme.canvas.ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                HStack {
-                    FrostedCircleButton(icon: "xmark", size: 38) {
-                        dismiss()
-                    }
-                    Spacer()
-                    Text("Add Focus Block")
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                    Spacer()
-                    Color.clear.frame(width: 38, height: 38)
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 16)
-                .padding(.bottom, 12)
-
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("BLOCK DETAILS")
-                                .eyebrowStyle()
-
-                            TextField("Focus Block Title", text: $title)
-                                .font(.system(size: 16, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.white)
-                                .padding(14)
-                                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
-
-                            TextField("Proof Description (Optional)", text: $notes)
-                                .font(.system(size: 15, weight: .regular, design: .rounded))
-                                .foregroundStyle(Color.white)
-                                .padding(14)
-                                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
-                        }
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("DATE & TIME (MON–SUN)")
-                                .eyebrowStyle()
-
-                            VStack(spacing: 12) {
-                                DatePicker(
-                                    "Date",
-                                    selection: $taskDate,
-                                    in: ISOWeekCalendar.current.startOfDay(for: Date())...,
-                                    displayedComponents: .date
-                                )
-                                .tint(DailyOSTheme.skyGlow)
-
-                                Divider().overlay(DailyOSTheme.hairline)
-
-                                DatePicker(
-                                    "Start Time",
-                                    selection: $startTime,
-                                    displayedComponents: .hourAndMinute
-                                )
-                                .tint(DailyOSTheme.skyGlow)
-                                .onChange(of: startTime) { _, newStart in
-                                    if combine(date: taskDate, time: endTime) <= combine(date: taskDate, time: newStart) {
-                                        endTime = newStart.addingTimeInterval(60 * 60)
-                                    }
-                                }
-
-                                Divider().overlay(DailyOSTheme.hairline)
-
-                                DatePicker(
-                                    "End Time",
-                                    selection: $endTime,
-                                    displayedComponents: .hourAndMinute
-                                )
-                                .tint(DailyOSTheme.skyGlow)
-                            }
-                            .padding(16)
-                            .ambientCard(cornerRadius: 18)
-                        }
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("ACCOUNTABILITY CHECK-INS")
-                                .eyebrowStyle()
-
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("Duration")
-                                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                                        .foregroundStyle(Color.white)
-                                    Spacer()
-                                    Text("\(durationMinutes) min")
-                                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(DailyOSTheme.skyGlow)
-                                }
-
-                                Text(durationMinutes <= 35
-                                     ? "≤ 35 min: Initial photo proof required in the first 5 minutes."
-                                     : "> 35 min: Initial photo proof required in the first 5 minutes, then every 30 minutes.")
-                                    .font(.system(size: 12, weight: .medium, design: .rounded))
-                                    .foregroundStyle(DailyOSTheme.eyebrow)
-                            }
-                            .padding(16)
-                            .ambientCard(cornerRadius: 18)
-                        }
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 24)
-                }
-
-                Button {
-                    FocusAccountabilityManager.shared.addScheduledTask(
-                        title: title,
-                        notes: notes,
-                        startDate: combinedStartDate,
-                        endDate: combinedEndDate
-                    )
-                    dismiss()
-                } label: {
-                    Text("Save")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.black)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(canSave ? DailyOSTheme.skyGlow : DailyOSTheme.emptyCell, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSave)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 14)
-            }
-        }
-        .preferredColorScheme(.dark)
-        .environment(\.calendar, ISOWeekCalendar.current)
-        .environment(\.locale, Locale(identifier: "en_GB"))
-    }
-
-    private func combine(date: Date, time: Date) -> Date {
-        let cal = ISOWeekCalendar.current
-        let d = cal.dateComponents([.year, .month, .day], from: date)
-        let t = cal.dateComponents([.hour, .minute], from: time)
-        var merged = DateComponents()
-        merged.year = d.year
-        merged.month = d.month
-        merged.day = d.day
-        merged.hour = t.hour
-        merged.minute = t.minute
-        merged.second = 0
-        return cal.date(from: merged) ?? date
     }
 }
 

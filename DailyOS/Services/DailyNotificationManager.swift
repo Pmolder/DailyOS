@@ -194,14 +194,15 @@ final class DailyNotificationManager: ObservableObject {
         let store = SharedModelContainer.shared
         let habits = store.fetchHabits().filter { !$0.isArchived }
         let logs = store.fetchHabitLogs()
-        let score = HabitMetricsEngine.todayScoreSummary(habits: habits, allLogs: logs)
-
         let todayKey = HabitItem.dateKey(for: Date())
-        let todayFocusTasksCount = FocusAccountabilityManager.shared.upcomingBlocks.filter { $0.dayKey == todayKey }.count
-        let focusCompleted = HabitMetricsEngine.completedFocusSessionsToday
+        let todayTasks = store.fetchFocusTasks(dayKey: todayKey)
+        let score = HabitMetricsEngine.todayScoreSummary(habits: habits, allLogs: logs, todayTasks: todayTasks)
 
-        let total = score.habitsTotal + max(todayFocusTasksCount, focusCompleted)
-        let done = min(total, score.habitsCompleted + focusCompleted)
+        let tasksCompleted = todayTasks.filter(\.isCompleted).count
+        let tasksTotal = todayTasks.count
+
+        let total = score.habitsTotal + tasksTotal
+        let done = score.habitsCompleted + tasksCompleted
         let left = max(0, total - done)
 
         let percent: Int
