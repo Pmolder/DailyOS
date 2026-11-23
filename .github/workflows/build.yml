@@ -15,10 +15,12 @@ jobs:
   build-ipa:
     name: Build Unsigned iOS IPA (SideStore / iLoader Compatible)
     runs-on: macos-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 1
 
@@ -163,8 +165,65 @@ jobs:
           ls -lh "${IPA_NAME}"
 
       - name: Upload Versioned IPA Artifact
-        uses: actions/upload-artifact@v4
+        id: upload_ipa_primary
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.meta.outputs.artifact_name }}
           path: ${{ steps.meta.outputs.ipa_name }}
+          archive: false
           retention-days: 30
+          if-no-files-found: error
+
+      - name: Wait Before Artifact Upload Retry
+        if: steps.upload_ipa_primary.outcome == 'failure'
+        run: sleep 15
+
+      - name: Retry Versioned IPA Artifact Upload
+        id: upload_ipa_retry
+        if: steps.upload_ipa_primary.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.meta.outputs.ipa_name }}
+          archive: false
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Publish IPA to Rolling GitHub Release
+        id: publish_release
+        if: github.event_name != 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IPA_NAME: ${{ steps.meta.outputs.ipa_name }}
+          IPA_PATH: ${{ steps.meta.outputs.ipa_name }}
+        run: |
+          if [ ! -f "${IPA_PATH}" ]; then
+            echo "ERROR: Expected IPA not found at ${IPA_PATH}"
+            exit 1
+          fi
+          TAG="latest"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${IPA_PATH}" --clobber
+            gh release edit "$TAG" \
+              --title "DailyOS Latest Build (${IPA_NAME})" \
+              --notes "Automated unsigned iOS IPA build from commit ${GITHUB_SHA::7}. Download the .ipa directly for SideStore / iLoader."
+          else
+            gh release create "$TAG" "${IPA_PATH}" \
+              --title "DailyOS Latest Build (${IPA_NAME})" \
+              --notes "Automated unsigned iOS IPA build from commit ${GITHUB_SHA::7}. Download the .ipa directly for SideStore / iLoader."
+          fi
+
+      - name: Verify IPA Delivery
+        run: |
+          PRIMARY="${{ steps.upload_ipa_primary.outcome }}"
+          RETRY="${{ steps.upload_ipa_retry.outcome }}"
+          RELEASE="${{ steps.publish_release.outcome }}"
+          echo "Delivery outcomes -> artifact_primary=${PRIMARY}, artifact_retry=${RETRY}, release=${RELEASE}"
+          if [ "${PRIMARY}" != "success" ] && [ "${RETRY}" != "success" ] && [ "${RELEASE}" != "success" ]; then
+            echo "ERROR: Both Actions Artifact upload and Rolling GitHub Release upload failed."
+            exit 1
+          fi
+          echo "OK: IPA delivered cleanly."
