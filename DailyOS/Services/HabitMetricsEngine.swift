@@ -418,7 +418,9 @@ enum HabitMetricsEngine {
     static func todayScoreSummary(
         habits: [HabitItem],
         allLogs: [HabitLog],
-        todayTasks: [FocusTaskItem] = []
+        todayTasks: [FocusTaskItem] = [],
+        completedCalendarEventsCount: Int = 0,
+        totalCalendarEventsCount: Int = 0
     ) -> TodayScoreSummary {
         let activeHabits = habits.filter { !$0.isArchived }
         let today = Date()
@@ -436,8 +438,8 @@ enum HabitMetricsEngine {
             }
         }
 
-        let completedTasks = todayTasks.filter(\.isCompleted).count
-        let totalItems = scheduledToday.count + todayTasks.count
+        let completedTasks = todayTasks.filter(\.isCompleted).count + max(0, completedCalendarEventsCount)
+        let totalItems = scheduledToday.count + todayTasks.count + max(completedCalendarEventsCount, totalCalendarEventsCount)
         let combinedScoreSum = habitScoreSum + Double(completedTasks)
         let combinedRatio = totalItems == 0 ? 0.0 : (combinedScoreSum / Double(totalItems))
         let focusMins = focusMinutesToday

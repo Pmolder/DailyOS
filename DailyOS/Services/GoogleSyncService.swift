@@ -31,8 +31,9 @@ enum GoogleSyncService {
     ) async -> [FocusBlockDisplayItem] {
         let cal = ISOWeekCalendar.current
         let now = Date()
-        let timeMinDate = cal.startOfDay(for: now)
-        let timeMaxDate = cal.date(byAdding: .day, value: daysAhead, to: timeMinDate) ?? now.addingTimeInterval(Double(daysAhead) * 86400)
+        let mondayOfWeek = ISOWeekCalendar.startOfMondayWeek(for: now)
+        let timeMinDate = cal.date(byAdding: .day, value: -7, to: mondayOfWeek) ?? cal.startOfDay(for: now)
+        let timeMaxDate = cal.date(byAdding: .day, value: max(daysAhead, 28), to: cal.startOfDay(for: now)) ?? now.addingTimeInterval(28 * 86400)
 
         let timeMin = isoFormatterStandard.string(from: timeMinDate)
         let timeMax = isoFormatterStandard.string(from: timeMaxDate)
@@ -77,18 +78,21 @@ enum GoogleSyncService {
 
                 let eventID = (ev["id"] as? String) ?? UUID().uuidString
                 let title = (ev["summary"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let description = (ev["description"] as? String) ?? (ev["location"] as? String) ?? ""
+                let description = (ev["description"] as? String) ?? ""
+                let location = (ev["location"] as? String) ?? ""
 
                 items.append(
                     FocusBlockDisplayItem(
                         id: "gcal_\(entry.id)_\(eventID)",
                         title: (title?.isEmpty == false ? title! : "Google Event"),
                         notes: description,
+                        location: location,
                         calendarTitle: entry.summary,
                         source: .googleCalendar,
                         startDate: startDate,
                         endDate: endDate,
-                        manualBlockID: nil
+                        manualBlockID: nil,
+                        remoteEventID: eventID
                     )
                 )
             }

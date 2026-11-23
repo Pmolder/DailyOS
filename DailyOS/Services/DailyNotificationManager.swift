@@ -196,10 +196,23 @@ final class DailyNotificationManager: ObservableObject {
         let logs = store.fetchHabitLogs()
         let todayKey = HabitItem.dateKey(for: Date())
         let todayTasks = store.fetchFocusTasks(dayKey: todayKey)
-        let score = HabitMetricsEngine.todayScoreSummary(habits: habits, allLogs: logs, todayTasks: todayTasks)
+        let linkedIDs = Set(todayTasks.compactMap(\.googleCalendarEventID).filter { !$0.isEmpty })
+        let todayCalBlocks = FocusAccountabilityManager.shared.upcomingBlocks.filter { block in
+            guard block.dayKey == todayKey else { return false }
+            if let rID = block.remoteEventID, linkedIDs.contains(rID) { return false }
+            return true
+        }
+        let calCompleted = todayCalBlocks.filter { CalendarEventCompletionStore.shared.isCompleted($0) }.count
+        let score = HabitMetricsEngine.todayScoreSummary(
+            habits: habits,
+            allLogs: logs,
+            todayTasks: todayTasks,
+            completedCalendarEventsCount: calCompleted,
+            totalCalendarEventsCount: todayCalBlocks.count
+        )
 
-        let tasksCompleted = todayTasks.filter(\.isCompleted).count
-        let tasksTotal = todayTasks.count
+        let tasksCompleted = todayTasks.filter(\.isCompleted).count + calCompleted
+        let tasksTotal = todayTasks.count + todayCalBlocks.count
 
         let total = score.habitsTotal + tasksTotal
         let done = score.habitsCompleted + tasksCompleted

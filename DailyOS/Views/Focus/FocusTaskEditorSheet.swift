@@ -5,6 +5,7 @@ import SwiftData
 struct FocusTaskEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    @ObservedObject private var googleAuth = GoogleAuthService.shared
 
     let existingTask: FocusTaskItem?
     let initialDate: Date
@@ -18,6 +19,7 @@ struct FocusTaskEditorSheet: View {
     @State private var durationMinutes: Int = 60
     @State private var showingCustomDurationStepper: Bool = false
     @State private var requiresPhotoProof: Bool = false
+    @State private var syncToGoogleCalendar: Bool = GoogleCalendarService.isAutoSyncEnabled
 
     private let durationPresets: [(label: String, mins: Int)] = [
         ("30m", 30),
@@ -253,6 +255,32 @@ struct FocusTaskEditorSheet: View {
                                     }
                                 }
                                 .tint(DailyOSTheme.skyGlow)
+
+                                if googleAuth.isConnected && googleAuth.syncGoogleCalendarEnabled {
+                                    Divider().overlay(DailyOSTheme.hairline)
+
+                                    Toggle(isOn: $syncToGoogleCalendar) {
+                                        HStack(spacing: 10) {
+                                            Image(systemName: "g.circle.fill")
+                                                .font(.system(size: 14, weight: .semibold))
+                                                .foregroundStyle(syncToGoogleCalendar ? DailyOSTheme.indigoGlow : DailyOSTheme.eyebrow)
+                                                .frame(width: 30, height: 30)
+                                                .background(
+                                                    (syncToGoogleCalendar ? DailyOSTheme.indigoGlow : DailyOSTheme.eyebrow).opacity(0.14),
+                                                    in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                                )
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text("Sync to Google Calendar")
+                                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                    .foregroundStyle(Color.white)
+                                                Text("Mirrors changes & reschedules automatically")
+                                                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                                                    .foregroundStyle(DailyOSTheme.eyebrow)
+                                            }
+                                        }
+                                    }
+                                    .tint(DailyOSTheme.indigoGlow)
+                                }
                             }
                             .padding(14)
                             .ambientCard(accent: requiresPhotoProof ? DailyOSTheme.skyGlow : nil, cornerRadius: 16, washOpacity: 0.08)
@@ -277,10 +305,14 @@ struct FocusTaskEditorSheet: View {
 
                         if let existingTask {
                             Button {
+                                let linkedID = existingTask.googleCalendarEventID
                                 PhotoProofScheduler.shared.cancelProofs(for: existingTask.id.uuidString)
                                 modelContext.delete(existingTask)
                                 try? modelContext.save()
                                 SharedModelContainer.shared.save()
+                                if let linkedID {
+                                    Task { await GoogleCalendarService.deleteLinkedEvent(eventID: linkedID) }
+                                }
                                 dismiss()
                             } label: {
                                 Text("Delete Task")
@@ -357,12 +389,14 @@ struct FocusTaskEditorSheet: View {
             }
             durationMinutes = task.durationMinutes
             requiresPhotoProof = task.requiresPhotoProof
+            syncToGoogleCalendar = task.syncToGoogleCalendar
         } else {
             selectedDate = initialDate
             hasSpecificTime = false
             startTime = defaultRoundedStartTime(for: initialDate)
             durationMinutes = 60
             requiresPhotoProof = false
+            syncToGoogleCalendar = GoogleCalendarService.isAutoSyncEnabled
         }
     }
 
@@ -397,7 +431,7 @@ struct FocusTaskEditorSheet: View {
         let key = HabitItem.dateKey(for: selectedDate)
         let resolvedStart: Date? = hasSpecificTime ? combine(date: selectedDate, time: startTime) : nil
 
-        let savedTaskID: String
+        let savedTask: FocusTaskItem
         if let task = existingTask {
             task.title = cleanTitle
             task.location = cleanLoc
@@ -406,7 +440,8 @@ struct FocusTaskEditorSheet: View {
             task.startTime = resolvedStart
             task.durationMinutes = durationMinutes
             task.requiresPhotoProof = requiresPhotoProof
-            savedTaskID = task.id.uuidString
+            task.syncToGoogleCalendar = syncToGoogleCalendar
+            savedTask = task
         } else {
             let newTask = FocusTaskItem(
                 title: cleanTitle,
@@ -415,12 +450,14 @@ struct FocusTaskEditorSheet: View {
                 dayKey: key,
                 startTime: resolvedStart,
                 durationMinutes: durationMinutes,
-                requiresPhotoProof: requiresPhotoProof
+                requiresPhotoProof: requiresPhotoProof,
+                syncToGoogleCalendar: syncToGoogleCalendar
             )
             modelContext.insert(newTask)
-            savedTaskID = newTask.id.uuidString
+            savedTask = newTask
         }
 
+        let savedTaskID = savedTask.id.uuidString
         try? modelContext.save()
         SharedModelContainer.shared.save()
 
@@ -434,6 +471,10 @@ struct FocusTaskEditorSheet: View {
             )
         } else if !requiresPhotoProof {
             PhotoProofScheduler.shared.cancelProofs(for: savedTaskID)
+        }
+
+        if syncToGoogleCalendar {
+            Task { await GoogleCalendarService.pushTask(savedTask) }
         }
 
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()

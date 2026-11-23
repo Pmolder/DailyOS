@@ -26,6 +26,8 @@ struct HabitsListView: View {
     @Query private var allFocusTasks: [FocusTaskItem]
 
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
+    @ObservedObject private var calendarCompletions = CalendarEventCompletionStore.shared
+    @ObservedObject private var focusManager = FocusAccountabilityManager.shared
 
     @State private var isScoreCardExpanded: Bool = true
     @State private var showingCreateSheet: Bool = false
@@ -59,8 +61,22 @@ struct HabitsListView: View {
     }
 
     private var todayScore: TodayScoreSummary {
+        let _ = calendarCompletions.revision
         let todaysTasks = allFocusTasks.filter { $0.dayKey == todayKey }
-        return HabitMetricsEngine.todayScoreSummary(habits: activeHabits, allLogs: allLogs, todayTasks: todaysTasks)
+        let linkedIDs = Set(allFocusTasks.compactMap(\.googleCalendarEventID).filter { !$0.isEmpty })
+        let todayCalBlocks = focusManager.upcomingBlocks.filter { block in
+            guard block.dayKey == todayKey else { return false }
+            if let rID = block.remoteEventID, linkedIDs.contains(rID) { return false }
+            return true
+        }
+        let calCompleted = todayCalBlocks.filter { calendarCompletions.isCompleted($0) }.count
+        return HabitMetricsEngine.todayScoreSummary(
+            habits: activeHabits,
+            allLogs: allLogs,
+            todayTasks: todaysTasks,
+            completedCalendarEventsCount: calCompleted,
+            totalCalendarEventsCount: todayCalBlocks.count
+        )
     }
 
     private var globalStreak: GlobalStreakSummary {

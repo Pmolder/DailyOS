@@ -229,15 +229,27 @@ final class FocusAccountabilityManager: ObservableObject {
         let now = Date()
         let cal = ISOWeekCalendar.current
         let todayStart = cal.startOfDay(for: now)
-        let horizonEnd = cal.date(byAdding: .day, value: 21, to: todayStart) ?? now.addingTimeInterval(21 * 86400)
+        let mondayStart = ISOWeekCalendar.startOfMondayWeek(for: now)
+        let windowStart = cal.date(byAdding: .day, value: -7, to: mondayStart) ?? todayStart
+        let horizonEnd = cal.date(byAdding: .day, value: 28, to: todayStart) ?? now.addingTimeInterval(28 * 86400)
+
+        // Collect all locally-owned Google Calendar event IDs to guarantee zero duplicates on pull
+        let linkedLocalGoogleEventIDs: Set<String> = Set(
+            SharedModelContainer.shared.fetchFocusTasks()
+                .compactMap(\.googleCalendarEventID)
+                .filter { !$0.isEmpty }
+        )
 
         var combined: [FocusBlockDisplayItem] = []
 
         // 1. Google Calendar + Google Tasks (cached from REST API v3/v1)
         let auth = GoogleAuthService.shared
-        for item in cachedGoogleBlocks where item.endDate > todayStart {
+        for item in cachedGoogleBlocks where item.endDate > windowStart {
             if item.source == .googleCalendar && !auth.syncGoogleCalendarEnabled { continue }
             if item.source == .googleTasks && !auth.syncGoogleTasksEnabled { continue }
+            if let remoteID = item.remoteEventID, linkedLocalGoogleEventIDs.contains(remoteID) {
+                continue
+            }
             combined.append(item)
         }
 
@@ -248,23 +260,25 @@ final class FocusAccountabilityManager: ObservableObject {
             }
             if !selectedCals.isEmpty {
                 let predicate = eventStore.predicateForEvents(
-                    withStart: todayStart,
+                    withStart: windowStart,
                     end: horizonEnd,
                     calendars: selectedCals
                 )
-                let events = eventStore.events(matching: predicate).filter { !$0.isAllDay && $0.endDate > todayStart }
+                let events = eventStore.events(matching: predicate).filter { !$0.isAllDay && $0.endDate > windowStart }
                 for ev in events {
                     let eventID = ev.eventIdentifier ?? "\(ev.title ?? "Event")_\(ev.startDate.timeIntervalSince1970)"
                     combined.append(
                         FocusBlockDisplayItem(
                             id: "apple_\(eventID)",
                             title: ev.title ?? "Calendar Event",
-                            notes: ev.notes ?? ev.location ?? "",
+                            notes: ev.notes ?? "",
+                            location: ev.location ?? "",
                             calendarTitle: ev.calendar?.title ?? "Apple Calendar",
                             source: .appleCalendar,
                             startDate: ev.startDate,
                             endDate: ev.endDate,
-                            manualBlockID: nil
+                            manualBlockID: nil,
+                            remoteEventID: eventID
                         )
                     )
                 }

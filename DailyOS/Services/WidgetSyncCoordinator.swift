@@ -90,7 +90,20 @@ enum WidgetSyncCoordinator {
         }
 
         let todayTasks = store.fetchFocusTasks(dayKey: todayKey)
-        let score = HabitMetricsEngine.todayScoreSummary(habits: allHabits, allLogs: allLogs, todayTasks: todayTasks)
+        let linkedIDs = Set(todayTasks.compactMap(\.googleCalendarEventID).filter { !$0.isEmpty })
+        let todayCalBlocks = FocusAccountabilityManager.shared.upcomingBlocks.filter { block in
+            guard block.dayKey == todayKey else { return false }
+            if let rID = block.remoteEventID, linkedIDs.contains(rID) { return false }
+            return true
+        }
+        let calDone = todayCalBlocks.filter { CalendarEventCompletionStore.shared.isCompleted($0) }.count
+        let score = HabitMetricsEngine.todayScoreSummary(
+            habits: allHabits,
+            allLogs: allLogs,
+            todayTasks: todayTasks,
+            completedCalendarEventsCount: calDone,
+            totalCalendarEventsCount: todayCalBlocks.count
+        )
         let globalStreak = HabitMetricsEngine.globalStreakSummary(habits: allHabits, allLogs: allLogs)
 
         let snapshot = WidgetSnapshot(

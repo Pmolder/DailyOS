@@ -141,6 +141,7 @@ struct FocusTabView: View {
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
     @ObservedObject private var timerController = DeepWorkTimerController.shared
     @ObservedObject private var photoProofScheduler = PhotoProofScheduler.shared
+    @ObservedObject private var calendarCompletions = CalendarEventCompletionStore.shared
 
     @State private var viewMode: FocusViewMode = .day
     @State private var selectedDate: Date = ISOWeekCalendar.current.startOfDay(for: Date())
@@ -191,10 +192,23 @@ struct FocusTabView: View {
     }
 
     private func syncedBlocks(for date: Date) -> [FocusBlockDisplayItem] {
+        let _ = calendarCompletions.revision
         let key = HabitItem.dateKey(for: date)
+        let linkedIDs = Set(allTasks.compactMap(\.googleCalendarEventID).filter { !$0.isEmpty })
         return focusManager.upcomingBlocks
-            .filter { $0.dayKey == key }
-            .sorted { $0.startDate < $1.startDate }
+            .filter { block in
+                guard block.dayKey == key else { return false }
+                if let remoteID = block.remoteEventID, linkedIDs.contains(remoteID) {
+                    return false
+                }
+                return true
+            }
+            .sorted { lhs, rhs in
+                let lDone = calendarCompletions.isCompleted(lhs)
+                let rDone = calendarCompletions.isCompleted(rhs)
+                if lDone != rDone { return !lDone }
+                return lhs.startDate < rhs.startDate
+            }
     }
 
     private func scheduledMinutes(for date: Date) -> Int {
@@ -266,6 +280,7 @@ struct FocusTabView: View {
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
                             viewMode = mode
                         }
+                        Task { await focusManager.syncAllSources() }
                     } label: {
                         Text(mode.rawValue)
                             .font(.system(size: 12, weight: .bold, design: .rounded))
@@ -364,12 +379,15 @@ struct FocusTabView: View {
                     .padding(.horizontal, 18)
             }
 
-            // 3. Priority To-Do Tasks & Time Blocks (List with native Swipe Actions)
+            // 3. Priority To-Do Tasks & Time Blocks (List with native Swipe Actions & Pull-to-Refresh)
             if dayTasks.isEmpty && daySynced.isEmpty {
                 ScrollView(showsIndicators: false) {
                     emptyDayCard
                         .padding(.horizontal, 18)
                         .padding(.top, 8)
+                }
+                .refreshable {
+                    await focusManager.syncAllSources()
                 }
             } else {
                 List {
@@ -434,13 +452,26 @@ struct FocusTabView: View {
                         Section {
                             ForEach(daySynced) { block in
                                 let _ = photoProofScheduler.logRevision
+                                let _ = calendarCompletions.revision
                                 let calKey = CalendarPhotoProofStore.stableKey(for: block)
+                                let completionKey = CalendarEventCompletionStore.eventKey(for: block)
                                 let isOptedIn = CalendarPhotoProofStore.isEnabled(forKey: calKey)
+                                let isDone = calendarCompletions.isCompleted(eventKey: completionKey)
                                 SyncedFocusBlockRow(
                                     block: block,
                                     isCurrent: focusManager.activeFocusBlock?.id == block.id,
+                                    isCompleted: isDone,
                                     isPhotoProofEnabled: isOptedIn,
                                     proofRecord: PhotoProofLogStore.record(for: calKey),
+                                    onToggleComplete: {
+                                        let nowDone = calendarCompletions.toggle(eventKey: completionKey, dayKey: block.dayKey)
+                                        if nowDone {
+                                            PhotoProofScheduler.shared.cancelProofs(for: calKey)
+                                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                        } else {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        }
+                                    },
                                     onTogglePhotoProof: {
                                         toggleCalendarPhotoProof(for: block, key: calKey, currentlyEnabled: isOptedIn)
                                     },
@@ -449,6 +480,7 @@ struct FocusTabView: View {
                                         timerController.prepare(
                                             title: block.title,
                                             minutes: mins,
+                                            cue: block.trimmedLocation.isEmpty ? block.notes : "at \(block.trimmedLocation)",
                                             autoStart: true
                                         )
                                         if isOptedIn {
@@ -487,6 +519,9 @@ struct FocusTabView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .refreshable {
+                    await focusManager.syncAllSources()
+                }
             }
         }
     }
@@ -548,11 +583,14 @@ struct FocusTabView: View {
                     let dayTasks = tasks(for: day)
                     let daySynced = syncedBlocks(for: day)
                     let totalCount = dayTasks.count + daySynced.count
-                    let allDone = !dayTasks.isEmpty && daySynced.isEmpty && dayTasks.allSatisfy(\.isCompleted)
+                    let allTasksDone = dayTasks.allSatisfy(\.isCompleted)
+                    let allSyncedDone = daySynced.allSatisfy { calendarCompletions.isCompleted($0) }
+                    let allDone = totalCount > 0 && allTasksDone && allSyncedDone
 
                     Button {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         selectedDate = day
+                        Task { await focusManager.syncAllSources() }
                     } label: {
                         VStack(spacing: 4) {
                             Text(shortWeekdayLabel(day))
@@ -653,6 +691,9 @@ struct FocusTabView: View {
                 .padding(.bottom, 32)
             }
         }
+        .refreshable {
+            await focusManager.syncAllSources()
+        }
     }
 
     private func weekDayOverviewCard(for day: Date) -> some View {
@@ -741,17 +782,19 @@ struct FocusTabView: View {
                     }
 
                     ForEach(daySynced) { block in
+                        let isBlockDone = calendarCompletions.isCompleted(block)
                         HStack(spacing: 8) {
                             Circle()
-                                .fill(Color(hex: "#A78BFA"))
+                                .fill(isBlockDone ? DailyOSTheme.emerald : DailyOSTheme.indigoGlow)
                                 .frame(width: 6, height: 6)
-                            Text("\(block.timeRangeText)")
+                            Text(block.formattedTimeAndDuration)
                                 .font(.system(size: 11, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle(DailyOSTheme.eyebrow)
-                            Text("— \(block.title)")
+                            Text("— \(block.title)\(block.trimmedLocation.isEmpty ? "" : " · \(block.trimmedLocation)")")
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .foregroundStyle(Color.white.opacity(0.85))
+                                .strikethrough(isBlockDone, color: DailyOSTheme.eyebrow)
+                                .foregroundStyle(isBlockDone ? DailyOSTheme.eyebrow : Color.white.opacity(0.88))
                                 .lineLimit(1)
                             Spacer(minLength: 0)
                         }
@@ -931,16 +974,23 @@ struct FocusTabView: View {
             }
             try? modelContext.save()
             SharedModelContainer.shared.save()
+            if task.syncToGoogleCalendar {
+                Task { await GoogleCalendarService.pushTask(task) }
+            }
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
     }
 
     private func deleteTask(_ task: FocusTaskItem) {
+        let linkedEventID = task.googleCalendarEventID
         PhotoProofScheduler.shared.cancelProofs(for: task.id.uuidString)
         PhotoProofLogStore.clearRecord(for: task.id.uuidString)
         modelContext.delete(task)
         try? modelContext.save()
         SharedModelContainer.shared.save()
+        if let linkedEventID {
+            Task { await GoogleCalendarService.deleteLinkedEvent(eventID: linkedEventID) }
+        }
     }
 
     private func launchTimer(for task: FocusTaskItem) {
@@ -974,6 +1024,7 @@ struct FocusTabView: View {
         if let shiftedDay = cal.date(byAdding: .day, value: weeks * 7, to: selectedDate) {
             selectedDate = shiftedDay
         }
+        Task { await focusManager.syncAllSources() }
     }
 
     // MARK: - Formatting Helpers (ISO-8601)
@@ -1187,13 +1238,15 @@ private struct PhotoProofStatusBadge: View {
     }
 }
 
-// MARK: - Synced Calendar / Google Tasks Row
+// MARK: - Native Checkable Synced Calendar / Google Tasks Row
 
 private struct SyncedFocusBlockRow: View {
     let block: FocusBlockDisplayItem
     let isCurrent: Bool
+    let isCompleted: Bool
     let isPhotoProofEnabled: Bool
     let proofRecord: PhotoProofTaskRecord?
+    let onToggleComplete: () -> Void
     let onTogglePhotoProof: () -> Void
     let onPlayTimer: () -> Void
 
@@ -1206,41 +1259,94 @@ private struct SyncedFocusBlockRow: View {
         }
     }
 
+    private var compactSourceTag: String {
+        switch block.source {
+        case .googleCalendar: return "Google Cal"
+        case .googleTasks: return "Google Tasks"
+        case .appleCalendar: return "Apple Cal"
+        case .local: return "Focus"
+        }
+    }
+
     var body: some View {
         HStack(spacing: 11) {
-            Image(systemName: block.source.iconName)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(isCurrent ? DailyOSTheme.emerald : sourceColor)
-                .frame(width: 36, height: 36)
-                .background((isCurrent ? DailyOSTheme.emerald : sourceColor).opacity(0.15), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            // Left: 1-Tap Circular Completion Checkbox (matches FocusTaskCardRow)
+            Button(action: onToggleComplete) {
+                ZStack {
+                    Circle()
+                        .fill(isCompleted ? DailyOSTheme.emerald : Color.clear)
+                        .frame(width: 26, height: 26)
+                        .overlay(
+                            Circle()
+                                .stroke(isCompleted ? DailyOSTheme.emerald : Color.white.opacity(0.28), lineWidth: 2)
+                        )
+                    if isCompleted {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(DailyOSTheme.canvas)
+                    }
+                }
+            }
+            .buttonStyle(MidnightPressStyle())
 
-            VStack(alignment: .leading, spacing: 4) {
+            // Center: Bold Event Title + Time/Duration Pill + Optional Location Pill + Muted Source Badge
+            VStack(alignment: .leading, spacing: 6) {
                 Text(block.title)
-                    .font(.system(size: 14, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.white)
-                    .lineLimit(1)
+                    .font(.system(size: 15, weight: .bold, design: .rounded))
+                    .strikethrough(isCompleted, color: DailyOSTheme.eyebrow)
+                    .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : Color.white)
+                    .lineLimit(2)
 
                 HStack(spacing: 6) {
-                    Text("\(block.timeRangeText) · \(Int(round(block.durationMinutes)))m")
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                        .foregroundStyle(DailyOSTheme.eyebrow)
+                    // Time & Duration Pill
+                    HStack(spacing: 4) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 10, weight: .bold))
+                        Text(block.formattedTimeAndDuration)
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                    }
+                    .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : sourceColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(
+                        (isCompleted ? DailyOSTheme.eyebrow : sourceColor).opacity(0.14),
+                        in: Capsule()
+                    )
 
-                    Text(block.source.badgeTitle)
+                    // Optional Location Pill
+                    if !block.trimmedLocation.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.system(size: 10, weight: .bold))
+                            Text(block.trimmedLocation)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(Color.white.opacity(isCompleted ? 0.45 : 0.82))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(DailyOSTheme.inputSurface, in: Capsule())
+                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                    }
+
+                    // Subtle Muted Source Tag
+                    Text(compactSourceTag)
                         .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundStyle(sourceColor)
+                        .foregroundStyle(DailyOSTheme.eyebrow)
                         .padding(.horizontal, 7)
-                        .padding(.vertical, 2)
-                        .background(sourceColor.opacity(0.14), in: Capsule())
+                        .padding(.vertical, 3)
+                        .background(DailyOSTheme.inputSurface, in: Capsule())
+                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
 
                     if isPhotoProofEnabled {
                         PhotoProofStatusBadge(record: proofRecord)
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            Spacer(minLength: 4)
-
+            // Right: Inline Camera Photo-Proof Toggle + Play Deep Work Timer Button
             HStack(spacing: 7) {
                 Button(action: onTogglePhotoProof) {
                     Image(systemName: isPhotoProofEnabled ? "camera.fill" : "camera")
@@ -1263,15 +1369,22 @@ private struct SyncedFocusBlockRow: View {
                 Button(action: onPlayTimer) {
                     Image(systemName: "play.fill")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(sourceColor)
+                        .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : sourceColor)
                         .frame(width: 34, height: 34)
-                        .background(sourceColor.opacity(0.15), in: Circle())
+                        .background(
+                            (isCompleted ? DailyOSTheme.inputSurface : sourceColor.opacity(0.15)),
+                            in: Circle()
+                        )
                 }
                 .buttonStyle(MidnightPressStyle())
             }
         }
-        .padding(13)
-        .ambientCard(accent: isCurrent ? DailyOSTheme.emerald : (isPhotoProofEnabled ? DailyOSTheme.skyGlow : nil), cornerRadius: 18, washOpacity: 0.08)
+        .padding(14)
+        .ambientCard(
+            accent: isCompleted ? DailyOSTheme.emerald : (isCurrent ? DailyOSTheme.emerald : (isPhotoProofEnabled ? DailyOSTheme.skyGlow : nil)),
+            cornerRadius: 18,
+            washOpacity: 0.08
+        )
     }
 }
 

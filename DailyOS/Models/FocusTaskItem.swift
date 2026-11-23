@@ -13,6 +13,8 @@ final class FocusTaskItem {
     var durationMinutes: Int = 60
     var isCompleted: Bool = false
     var requiresPhotoProof: Bool = false
+    var googleCalendarEventID: String? = nil
+    var syncToGoogleCalendar: Bool = true
     var createdAt: Date = Date()
 
     init(
@@ -25,6 +27,8 @@ final class FocusTaskItem {
         durationMinutes: Int = 60,
         isCompleted: Bool = false,
         requiresPhotoProof: Bool = false,
+        googleCalendarEventID: String? = nil,
+        syncToGoogleCalendar: Bool = true,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -36,6 +40,8 @@ final class FocusTaskItem {
         self.durationMinutes = max(5, min(720, durationMinutes))
         self.isCompleted = isCompleted
         self.requiresPhotoProof = requiresPhotoProof
+        self.googleCalendarEventID = googleCalendarEventID
+        self.syncToGoogleCalendar = syncToGoogleCalendar
         self.createdAt = createdAt
     }
 

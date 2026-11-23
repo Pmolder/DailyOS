@@ -102,14 +102,36 @@ struct FocusBlockDisplayItem: Identifiable, Equatable {
     let id: String
     let title: String
     let notes: String
+    var location: String = ""
     let calendarTitle: String
     let source: FocusBlockSource
     let startDate: Date
     let endDate: Date
     let manualBlockID: UUID?
+    var remoteEventID: String? = nil
+    var isAllDay: Bool = false
+
+    var trimmedLocation: String {
+        location.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var durationMinutes: Double {
         max(1.0, endDate.timeIntervalSince(startDate) / 60.0)
+    }
+
+    var formattedDuration: String {
+        let mins = max(5, Int(round(durationMinutes)))
+        if mins < 60 { return "\(mins)m" }
+        let h = mins / 60
+        let rem = mins % 60
+        if rem == 0 { return "\(h)h" }
+        if rem == 30 { return "\(h).5h" }
+        return "\(h)h \(rem)m"
+    }
+
+    var formattedTimeAndDuration: String {
+        if isAllDay { return "All Day" }
+        return "\(timeRangeText) · \(formattedDuration)"
     }
 
     var requiresRecurringCheckIns: Bool {

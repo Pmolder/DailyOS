@@ -25,6 +25,7 @@ struct SettingsView: View {
     @AppStorage(PhotoProofSettings.initialMinutesKey) private var initialPhotoMinutes: Int = 2
     @AppStorage(PhotoProofSettings.intervalMinutesKey) private var photoIntervalMinutes: Int = 30
     @AppStorage(PhotoProofSettings.captureSecondsKey) private var photoCaptureSeconds: Int = 30
+    @AppStorage(GoogleCalendarService.autoSyncStorageKey) private var autoSyncTasksToGoogleCalendar: Bool = true
 
     // Factory Reset (Two-Step Alert)
     @State private var showingResetConfirmationStep1: Bool = false
@@ -603,6 +604,20 @@ struct SettingsView: View {
                 }
             }
 
+            if googleAuth.needsWriteScopeReconnect {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color(hex: "#FFB020"))
+                    Text("Reconnect Google Calendar to enable 2-way task sync")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color(hex: "#FFB020"))
+                }
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(hex: "#FFB020").opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+            }
+
             if let status = googleAuth.statusMessage {
                 Text(status)
                     .font(.system(size: 12, weight: .medium, design: .rounded))
@@ -610,6 +625,11 @@ struct SettingsView: View {
             }
 
             Divider().overlay(DailyOSTheme.hairline)
+
+            Toggle("Auto-Sync Tasks to Google Calendar", isOn: $autoSyncTasksToGoogleCalendar)
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(Color.white)
+                .tint(DailyOSTheme.indigoGlow)
 
             Toggle("Sync Google Calendar (v3)", isOn: Binding(
                 get: { googleAuth.syncGoogleCalendarEnabled },
@@ -988,8 +1008,8 @@ struct SettingsView: View {
     }
 
     private var installedVersionDisplay: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.0.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "17"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.1.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "18"
         return "v\(short) (Build \(build))"
     }
 

@@ -44,6 +44,7 @@ enum AppResetManager {
         KeychainService.saveGoogleClientID("")
         KeychainService.deleteGeminiAPIKey()
         WakeQRStorage.clear()
+        CalendarEventCompletionStore.shared.clearAll()
         CalendarPhotoProofStore.clearAll()
         PhotoProofLogStore.clearAll()
         WakeStatsStore.clearAll()

@@ -14,6 +14,7 @@ final class GoogleAuthService: NSObject, ObservableObject, ASWebAuthenticationPr
     private static let authEndpoint = "https://accounts.google.com/o/oauth2/v2/auth"
     private static let tokenEndpoint = "https://oauth2.googleapis.com/token"
     private static let scopes = [
+        "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar.readonly",
         "https://www.googleapis.com/auth/tasks.readonly"
     ].joined(separator: " ")
@@ -26,6 +27,7 @@ final class GoogleAuthService: NSObject, ObservableObject, ASWebAuthenticationPr
     @Published private(set) var isAuthenticating: Bool = false
     @Published var syncGoogleCalendarEnabled: Bool = true
     @Published var syncGoogleTasksEnabled: Bool = true
+    @Published var needsWriteScopeReconnect: Bool = false
     @Published var statusMessage: String?
 
     private var activeAuthSession: ASWebAuthenticationSession?
@@ -62,6 +64,7 @@ final class GoogleAuthService: NSObject, ObservableObject, ASWebAuthenticationPr
     func signOut() {
         KeychainService.deleteGoogleTokens()
         isConnected = false
+        needsWriteScopeReconnect = false
         statusMessage = "Disconnected from Google."
     }
 
@@ -166,6 +169,7 @@ final class GoogleAuthService: NSObject, ObservableObject, ASWebAuthenticationPr
             )
 
             isConnected = true
+            needsWriteScopeReconnect = false
             isAuthenticating = false
             statusMessage = "Connected to Google Calendar & Tasks."
         } catch {
