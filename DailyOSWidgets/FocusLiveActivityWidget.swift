@@ -2,18 +2,19 @@ import ActivityKit
 import WidgetKit
 import SwiftUI
 
-/// iPhone 13 Pro–first Midnight Obsidian Lock Screen Live Activity for Deep Work
-/// displaying calm Smart Elapsed-of-Total Time (`35m / 45m`) and `0% → 100%` progress.
+/// iPhone 13 Pro–first Midnight Obsidian Lock Screen Live Activity for Focus Sessions:
+/// - ONE progress indicator only (46×46pt live circular gauge on the left — zero duplicate horizontal bar)
+/// - Native iOS live-updating `Text(timerInterval:pauseTime:countsDown: false)` so it ticks smoothly on Lock Screen
+/// - Zero duplicate `"DEEP WORK"` eyebrow/title text
 struct FocusLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: FocusActivityAttributes.self) { context in
-            // Lock Screen / StandBy Banner
             FocusLockScreenBannerView(context: context)
                 .activityBackgroundTint(Color.dailyHex("#09090D"))
                 .activitySystemActionForegroundColor(Color.white)
         } dynamicIsland: { context in
             let accent = Color.dailyHex(context.attributes.accentHex)
-            let displayText = resolvedElapsedOfTotal(for: context.state)
+            let eyebrow = resolvedEyebrow(for: context.attributes)
             return DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     ZStack {
@@ -26,18 +27,31 @@ struct FocusLiveActivityWidget: Widget {
                     }
                 }
                 DynamicIslandExpandedRegion(.trailing) {
-                    Text(displayText)
+                    VStack(alignment: .trailing, spacing: 1) {
+                        Text(
+                            timerInterval: context.state.startDate...context.state.endDate,
+                            pauseTime: context.state.isPaused ? (context.state.pausedAt ?? Date()) : nil,
+                            countsDown: false
+                        )
                         .font(.system(size: 15, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : Color.white)
-                        .lineLimit(1)
+                        .multilineTextAlignment(.trailing)
+                        .frame(maxWidth: 64, alignment: .trailing)
+
+                        Text("/ \(FocusElapsedTimeFormatter.formatTotalDuration(minutes: context.state.totalDurationMinutes))")
+                            .font(.system(size: 10, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.dailyHex("#7D7E8A"))
+                    }
                 }
                 DynamicIslandExpandedRegion(.center) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("DEEP WORK")
+                        Text(eyebrow)
                             .font(.system(size: 9, weight: .semibold, design: .rounded))
                             .tracking(1.2)
                             .foregroundStyle(Color.dailyHex("#7D7E8A"))
+                            .lineLimit(1)
                         Text(context.attributes.taskTitle)
                             .font(.system(size: 14, weight: .bold, design: .rounded))
                             .foregroundStyle(Color.white)
@@ -57,11 +71,15 @@ struct FocusLiveActivityWidget: Widget {
                     .font(.system(size: 12, weight: .bold))
                     .foregroundStyle(accent)
             } compactTrailing: {
-                Text(displayText)
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : Color.white)
-                    .lineLimit(1)
+                Text(
+                    timerInterval: context.state.startDate...context.state.endDate,
+                    pauseTime: context.state.isPaused ? (context.state.pausedAt ?? Date()) : nil,
+                    countsDown: false
+                )
+                .font(.system(size: 11, weight: .bold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : Color.white)
+                .frame(maxWidth: 46, alignment: .trailing)
             } minimal: {
                 Image(systemName: "timer")
                     .font(.system(size: 12, weight: .bold))
@@ -71,17 +89,16 @@ struct FocusLiveActivityWidget: Widget {
         }
     }
 
-    private func resolvedElapsedOfTotal(for state: FocusActivityAttributes.ContentState) -> String {
-        if let provided = state.elapsedOfTotalText, !provided.isEmpty {
-            return provided
+    private func resolvedEyebrow(for attributes: FocusActivityAttributes) -> String {
+        let trimmedWindow = attributes.timeWindowLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if attributes.taskTitle.caseInsensitiveCompare("Deep Work") == .orderedSame {
+            return trimmedWindow.isEmpty ? "FOCUS SESSION" : trimmedWindow.uppercased()
         }
-        let total = max(60, Int(round(state.endDate.timeIntervalSince(state.startDate))))
-        let elapsed = max(0, total - state.remainingSecondsWhenPaused)
-        return FocusElapsedTimeFormatter.formatElapsedOfTotal(elapsedSeconds: elapsed, totalSeconds: total)
+        return trimmedWindow.isEmpty ? "FOCUS SESSION" : trimmedWindow.uppercased()
     }
 }
 
-// MARK: - iPhone 13 Pro Centerpiece Lock Screen Banner
+// MARK: - iPhone 13 Pro Centerpiece Lock Screen Banner (Single Circular Gauge + Native Live Clock)
 
 private struct FocusLockScreenBannerView: View {
     let context: ActivityViewContext<FocusActivityAttributes>
@@ -94,18 +111,21 @@ private struct FocusLockScreenBannerView: View {
         max(60.0, context.state.endDate.timeIntervalSince(context.state.startDate))
     }
 
-    private var elapsedProgress: Double {
+    private var elapsedProgressWhenPaused: Double {
         let elapsed = max(0.0, totalSeconds - Double(context.state.remainingSecondsWhenPaused))
         return min(1.0, max(0.0, elapsed / totalSeconds))
     }
 
-    private var elapsedOfTotalLabel: String {
-        if let provided = context.state.elapsedOfTotalText, !provided.isEmpty {
-            return provided
+    private var eyebrowText: String {
+        let trimmedWindow = context.attributes.timeWindowLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if context.attributes.taskTitle.caseInsensitiveCompare("Deep Work") == .orderedSame {
+            return trimmedWindow.isEmpty ? "FOCUS SESSION" : trimmedWindow.uppercased()
         }
-        let total = Int(round(totalSeconds))
-        let elapsed = max(0, total - context.state.remainingSecondsWhenPaused)
-        return FocusElapsedTimeFormatter.formatElapsedOfTotal(elapsedSeconds: elapsed, totalSeconds: total)
+        return trimmedWindow.isEmpty ? "FOCUS SESSION" : trimmedWindow.uppercased()
+    }
+
+    private var totalDurationText: String {
+        FocusElapsedTimeFormatter.formatTotalDuration(minutes: context.state.totalDurationMinutes)
     }
 
     var body: some View {
@@ -113,118 +133,104 @@ private struct FocusLockScreenBannerView: View {
             // Deep Matte Obsidian Base + Subtle Left Radial Accent Glow Wash
             Color.dailyHex("#09090D")
             RadialGradient(
-                colors: [accent.opacity(0.22), accent.opacity(0.0)],
+                colors: [accent.opacity(0.20), accent.opacity(0.0)],
                 center: .leading,
                 startRadius: 4,
                 endRadius: 170
             )
 
-            VStack(spacing: 10) {
-                HStack(spacing: 14) {
-                    // Left: Compact Glowing Circular Progress Gauge (0% -> 100%)
-                    ZStack {
+            HStack(spacing: 14) {
+                // Left: Single Sleek 46x46pt Glowing Circular Progress Ring (No Duplicate Bottom Bar)
+                ZStack {
+                    Circle()
+                        .fill(Color.dailyHex("#141419"))
+                        .frame(width: 46, height: 46)
+
+                    if context.state.isPaused {
                         Circle()
-                            .fill(Color.dailyHex("#141419"))
-                            .frame(width: 42, height: 42)
-
-                        if context.state.isPaused {
-                            Circle()
-                                .stroke(Color.white.opacity(0.10), lineWidth: 3)
-                                .frame(width: 42, height: 42)
-                            Circle()
-                                .trim(from: 0, to: elapsedProgress)
-                                .stroke(Color.dailyHex("#FFB020"), style: StrokeStyle(lineWidth: 3, lineCap: .round))
-                                .rotationEffect(.degrees(-90))
-                                .frame(width: 42, height: 42)
-                        } else {
-                            ProgressView(
-                                timerInterval: context.state.startDate...context.state.endDate,
-                                countsDown: false
-                            ) {
-                                EmptyView()
-                            } currentValueLabel: {
-                                EmptyView()
-                            }
-                            .progressViewStyle(.circular)
-                            .tint(accent)
-                            .frame(width: 42, height: 42)
+                            .stroke(Color.white.opacity(0.10), lineWidth: 3.5)
+                            .frame(width: 46, height: 46)
+                        Circle()
+                            .trim(from: 0, to: elapsedProgressWhenPaused)
+                            .stroke(Color.dailyHex("#FFB020"), style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .frame(width: 46, height: 46)
+                    } else {
+                        ProgressView(
+                            timerInterval: context.state.startDate...context.state.endDate,
+                            countsDown: false
+                        ) {
+                            EmptyView()
+                        } currentValueLabel: {
+                            EmptyView()
                         }
-
-                        Image(systemName: context.state.isPaused ? "pause.fill" : "timer")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : accent)
+                        .progressViewStyle(.circular)
+                        .tint(accent)
+                        .frame(width: 46, height: 46)
                     }
 
-                    // Center: DEEP WORK Eyebrow + Bold Task Title + Muted Cue Subtitle
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("DEEP WORK")
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .tracking(1.3)
-                            .foregroundStyle(Color.dailyHex("#7D7E8A"))
+                    Image(systemName: context.state.isPaused ? "pause.fill" : "timer")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : accent)
+                }
 
-                        Text(context.attributes.taskTitle)
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.white)
+                // Center: Unique Eyebrow (Never Duplicates Title) + Bold Task Title + Optional Cue
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(eyebrowText)
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .tracking(1.2)
+                        .foregroundStyle(Color.dailyHex("#7D7E8A"))
+                        .lineLimit(1)
+
+                    Text(context.attributes.taskTitle)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                        .lineLimit(1)
+
+                    if !context.attributes.focusCue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(context.attributes.focusCue)
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.58))
                             .lineLimit(1)
-
-                        if !context.attributes.focusCue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Text(context.attributes.focusCue)
-                                .font(.system(size: 12, weight: .medium, design: .rounded))
-                                .foregroundStyle(Color.white.opacity(0.58))
-                                .lineLimit(1)
-                        }
-                    }
-
-                    Spacer(minLength: 6)
-
-                    // Right: Calm Elapsed-of-Total Display (`35m / 45m`) + Status Pill
-                    VStack(alignment: .trailing, spacing: 4) {
-                        Text(elapsedOfTotalLabel)
-                            .font(.system(size: 19, weight: .bold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(Color.white)
-                            .lineLimit(1)
-
-                        Text(context.state.isPaused ? "PAUSED" : "ACTIVE")
-                            .font(.system(size: 9, weight: .black, design: .rounded))
-                            .tracking(0.8)
-                            .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : Color.dailyHex("#34D399"))
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(
-                                (context.state.isPaused ? Color.dailyHex("#FFB020") : Color.dailyHex("#34D399")).opacity(0.16),
-                                in: Capsule()
-                            )
                     }
                 }
 
-                // Sleek Horizontal Micro-Progress Bar (0% -> 100%)
-                if context.state.isPaused {
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(Color.white.opacity(0.10))
-                            Capsule()
-                                .fill(Color.dailyHex("#FFB020"))
-                                .frame(width: max(4, geo.size.width * elapsedProgress))
-                        }
+                Spacer(minLength: 8)
+
+                // Right: Native Live-Updating Elapsed Clock + Muted `/ 45m` Total + Status Micro-Pill
+                VStack(alignment: .trailing, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(
+                            timerInterval: context.state.startDate...context.state.endDate,
+                            pauseTime: context.state.isPaused ? (context.state.pausedAt ?? Date()) : nil,
+                            countsDown: false
+                        )
+                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(Color.white)
+                        .multilineTextAlignment(.trailing)
+                        .frame(minWidth: 46, alignment: .trailing)
+
+                        Text("/ \(totalDurationText)")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.dailyHex("#7D7E8A"))
                     }
-                    .frame(height: 3.5)
-                } else {
-                    ProgressView(
-                        timerInterval: context.state.startDate...context.state.endDate,
-                        countsDown: false
-                    ) {
-                        EmptyView()
-                    } currentValueLabel: {
-                        EmptyView()
-                    }
-                    .progressViewStyle(.linear)
-                    .tint(accent)
-                    .frame(height: 3.5)
+
+                    Text(context.state.isPaused ? "PAUSED" : "ACTIVE")
+                        .font(.system(size: 9, weight: .black, design: .rounded))
+                        .tracking(0.8)
+                        .foregroundStyle(context.state.isPaused ? Color.dailyHex("#FFB020") : Color.dailyHex("#34D399"))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 2.5)
+                        .background(
+                            (context.state.isPaused ? Color.dailyHex("#FFB020") : Color.dailyHex("#34D399")).opacity(0.16),
+                            in: Capsule()
+                        )
                 }
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 13)
+            .padding(.vertical, 14)
         }
     }
 }

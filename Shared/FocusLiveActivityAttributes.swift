@@ -5,8 +5,8 @@ import ActivityKit
 /// - First 60s (`elapsed < 60`): `0:42 / 45m`
 /// - Once >= 60s: calm minutes-only (`1m / 45m`, `35m / 45m`, `35m / 1h 30m`, `1h 05m / 1h 30m`)
 enum FocusElapsedTimeFormatter {
-    static func formatTotalDuration(seconds: Int) -> String {
-        let totalMins = max(1, Int(round(Double(max(60, seconds)) / 60.0)))
+    static func formatTotalDuration(minutes: Int) -> String {
+        let totalMins = max(1, minutes)
         if totalMins < 60 {
             return "\(totalMins)m"
         }
@@ -16,6 +16,11 @@ enum FocusElapsedTimeFormatter {
             return "\(h)h"
         }
         return "\(h)h \(r)m"
+    }
+
+    static func formatTotalDuration(seconds: Int) -> String {
+        let totalMins = max(1, Int(round(Double(max(60, seconds)) / 60.0)))
+        return formatTotalDuration(minutes: totalMins)
     }
 
     static func formatElapsed(seconds: Int) -> String {
@@ -47,24 +52,40 @@ struct FocusActivityAttributes: ActivityAttributes {
         var endDate: Date
         var isPaused: Bool
         var remainingSecondsWhenPaused: Int
-        var elapsedOfTotalText: String?
+        var totalDurationMinutes: Int
+        var pausedAt: Date?
 
         init(
             startDate: Date,
             endDate: Date,
             isPaused: Bool,
             remainingSecondsWhenPaused: Int,
-            elapsedOfTotalText: String? = nil
+            totalDurationMinutes: Int = 45,
+            pausedAt: Date? = nil
         ) {
             self.startDate = startDate
             self.endDate = endDate
             self.isPaused = isPaused
             self.remainingSecondsWhenPaused = remainingSecondsWhenPaused
-            self.elapsedOfTotalText = elapsedOfTotalText
+            self.totalDurationMinutes = max(1, totalDurationMinutes)
+            self.pausedAt = pausedAt
         }
     }
 
     var taskTitle: String
     var focusCue: String
     var accentHex: String
+    var timeWindowLabel: String
+
+    init(
+        taskTitle: String,
+        focusCue: String,
+        accentHex: String = "#60A5FA",
+        timeWindowLabel: String = "FOCUS SESSION"
+    ) {
+        self.taskTitle = taskTitle
+        self.focusCue = focusCue
+        self.accentHex = accentHex
+        self.timeWindowLabel = timeWindowLabel
+    }
 }

@@ -93,7 +93,7 @@ struct AlarmsListView: View {
                         }
                     }
                     .padding(.horizontal, 18)
-                    .padding(.bottom, 32)
+                    .padding(.bottom, 120)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)

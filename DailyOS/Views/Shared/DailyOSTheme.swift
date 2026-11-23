@@ -127,13 +127,15 @@ struct FrostedCircleButton: View {
     }
 }
 
-// MARK: - Ambient Bloom Circular Progress Ring
+// MARK: - Ambient Bloom Circular Progress Ring (Elastic 0.0 -> Target Sweep on Appear)
 
 struct AmbientBloomRing: View {
     let progress: Double
     let color: Color
     var lineWidth: CGFloat = 14
     var diameter: CGFloat = 176
+
+    @State private var animatedProgress: Double = 0.0
 
     private var clamped: Double {
         max(0.0, min(1.0, progress))
@@ -148,20 +150,30 @@ struct AmbientBloomRing: View {
 
             // Duplicated blurred ambient bloom layer underneath
             Circle()
-                .trim(from: 0, to: clamped)
+                .trim(from: 0, to: animatedProgress)
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .frame(width: diameter, height: diameter)
                 .blur(radius: 10)
-                .opacity(0.45)
+                .opacity(0.50)
 
             // Crisp foreground neon-glass ring
             Circle()
-                .trim(from: 0, to: clamped)
+                .trim(from: 0, to: animatedProgress)
                 .stroke(color, style: StrokeStyle(lineWidth: lineWidth, lineCap: .round))
                 .rotationEffect(.degrees(-90))
                 .frame(width: diameter, height: diameter)
-                .animation(.spring(response: 0.45, dampingFraction: 0.82), value: clamped)
+        }
+        .onAppear {
+            animatedProgress = 0.0
+            withAnimation(ProMotionSpring.ringFill) {
+                animatedProgress = clamped
+            }
+        }
+        .onChange(of: clamped) { _, newValue in
+            withAnimation(ProMotionSpring.ringFill) {
+                animatedProgress = newValue
+            }
         }
     }
 }

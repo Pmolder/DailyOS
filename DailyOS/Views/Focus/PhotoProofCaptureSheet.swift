@@ -255,6 +255,22 @@ struct PhotoProofCaptureSheet: View {
     }
 
     private func submitPhoto(_ image: UIImage) {
+        let savedKey = KeychainService.loadGeminiAPIKey().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Works 100% locally with zero blocking when no Gemini API key is configured
+        if savedKey.isEmpty {
+            isSubmitting = false
+            statusIsVerified = true
+            statusIsError = false
+            statusFeedback = "Photo Proof Saved — Add a free Gemini key in Settings for AI verification."
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            cameraVM.stopSession()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                scheduler.markVerifiedAndDismiss(request)
+            }
+            return
+        }
+
         isSubmitting = true
         statusIsError = false
         statusFeedback = "Verifying live photo..."
@@ -271,20 +287,19 @@ struct PhotoProofCaptureSheet: View {
                 if result.verified {
                     statusIsVerified = true
                     statusIsError = false
-                    statusFeedback = "Verified ✓ — \(result.reason)"
+                    statusFeedback = "Verified — \(result.reason)"
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     cameraVM.stopSession()
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
                         scheduler.markVerifiedAndDismiss(request)
                     }
                 } else if result.noAPIKeyConfigured {
-                    // Graceful local confirmation when no Gemini key is set yet
                     statusIsVerified = true
                     statusIsError = false
-                    statusFeedback = "Photo Saved ✓ — Add a free Google AI Studio key in Settings for AI verification."
+                    statusFeedback = "Photo Proof Saved — Add a free Gemini key in Settings for AI verification."
                     UINotificationFeedbackGenerator().notificationOccurred(.success)
                     cameraVM.stopSession()
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
                         scheduler.markVerifiedAndDismiss(request)
                     }
                 } else {

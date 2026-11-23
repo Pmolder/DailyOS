@@ -17,7 +17,6 @@ enum AppResetManager {
         PhotoProofScheduler.shared.cancelAllProofs()
         FocusAutoSessionEngine.shared.endCurrentSession(markDismissedIfScheduled: false)
         FocusNudgeScheduler.shared.cancelAllNudges()
-        FocusPiPManager.shared.stopAndDisarmPiP()
 
         // 2. Delete all SwiftData records across every registered @Model type
         try? modelContext.delete(model: HabitItem.self)
@@ -49,7 +48,6 @@ enum AppResetManager {
         CalendarEventCompletionStore.shared.clearAll()
         CalendarPhotoProofStore.clearAll()
         PhotoProofLogStore.clearAll()
-        NightDockProofStore.clearAll()
         WakeStatsStore.clearAll()
         WidgetBridge.clearAllBridgeFiles()
 

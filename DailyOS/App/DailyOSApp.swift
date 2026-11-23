@@ -38,12 +38,7 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         } else if let type = userInfo["type"] as? String, type == PhotoProofScheduler.notificationType {
             Task { @MainActor in
                 _ = PhotoProofScheduler.shared.handleNotificationInteraction(userInfo: userInfo)
-                // Suppress duplicate banner when Floating PiP pill is actively morphing into the Photo-Proof alert
-                if FocusPiPManager.shared.isPiPActive {
-                    completionHandler([])
-                } else {
-                    completionHandler([.sound])
-                }
+                completionHandler([.banner, .sound, .list])
             }
             return
         } else if let type = userInfo["type"] as? String, type == FocusNudgeScheduler.startNudgeType {

@@ -3,7 +3,7 @@ import SwiftData
 import EventKit
 import Combine
 
-// MARK: - Tab 3: Task-First Day Slider, Split Timed/Anytime Layout & Week Overview Focus Hub
+// MARK: - Tab 3: Clean Single-Scroll Focus Hub (Day View, Timed/Anytime Sections & Week Overview)
 
 struct FocusTabView: View {
     private enum FocusViewMode: String, CaseIterable {
@@ -29,15 +29,11 @@ struct FocusTabView: View {
     @State private var newTaskInitialDate: Date = Date()
     @State private var editingTask: FocusTaskItem? = nil
 
-    // 120Hz ProMotion Matched Geometry Namespaces
-    @Namespace private var viewModeNS
-    @Namespace private var selectedDayNS
+    // 120Hz ProMotion Animations & Shimmer
+    @Namespace private var focusNS
+    @State private var todo100ShimmerTrigger: Int = 0
 
     private var cal: Calendar { ISOWeekCalendar.current }
-
-    private var selectedDayKey: String {
-        HabitItem.dateKey(for: selectedDate)
-    }
 
     private var isViewingToday: Bool {
         cal.isDateInToday(selectedDate)
@@ -62,7 +58,7 @@ struct FocusTabView: View {
             .filter { $0.dayKey == key }
             .sorted { lhs, rhs in
                 if lhs.isCompleted != rhs.isCompleted {
-                    return !lhs.isCompleted // Pending first, completed below
+                    return !lhs.isCompleted
                 }
                 if lhs.sortMinutesOfDay != rhs.sortMinutesOfDay {
                     return lhs.sortMinutesOfDay < rhs.sortMinutesOfDay
@@ -102,20 +98,30 @@ struct FocusTabView: View {
             ZStack {
                 DailyOSTheme.canvas.ignoresSafeArea()
 
-                VStack(spacing: 12) {
-                    // 1. Clean Top Header: Focus + Matched-Geometry Day|Week Switcher + Timer + Add
-                    topHeaderBar
-                        .padding(.horizontal, 18)
-                        .padding(.top, 6)
+                // Single Full-Screen Smooth Vertical ScrollView (Zero Frozen Halves, Generous Tab Bar Clearance)
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 14) {
+                        // 1. Fixed-Height Crisp Header Bar
+                        topHeaderBar
 
-                    // 2. Main Content: Day View (Adaptive Split Timed | Anytime) vs Week Overview
-                    if viewMode == .day {
-                        dayModeContent
-                            .transition(.midnightReveal)
-                    } else {
-                        weekModeContent
-                            .transition(.midnightReveal)
+                        // 2. Main Content: Day View vs Week Overview
+                        if viewMode == .day {
+                            dayModeContent
+                                .transition(.dailyCardSpring)
+                        } else {
+                            weekModeContent
+                                .transition(.dailyCardSpring)
+                        }
+
+                        // Generous bottom clearance so floating Tab Bar never overlaps buttons or cards
+                        Spacer().frame(height: 120)
                     }
+                    .padding(.horizontal, 18)
+                    .padding(.top, 8)
+                }
+                .refreshable {
+                    await focusManager.syncAllSources()
+                    sessionEngine.evaluateAutoStartSchedule()
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -134,18 +140,19 @@ struct FocusTabView: View {
         }
     }
 
-    // MARK: - Top Bar: Focus + Matched-Geometry Day|Week Switcher + Timer + Add
+    // MARK: - 1. Crisp Fixed-Height Top Header Bar (Strict 128×34pt Segmented Pill)
 
     private var topHeaderBar: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .center, spacing: 10) {
             Text("Focus")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(size: 28, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.white)
+                .lineLimit(1)
 
-            Spacer(minLength: 4)
+            Spacer(minLength: 8)
 
-            // Compact Day | Week Segmented Pill with 120Hz Matched-Geometry Sliding Pill
-            HStack(spacing: 2) {
+            // Compact Fixed-Dimension Day | Week Segmented Pill (Impossible to Stretch Vertically)
+            HStack(spacing: 0) {
                 ForEach(FocusViewMode.allCases, id: \.self) { mode in
                     let active = viewMode == mode
                     Button {
@@ -159,23 +166,26 @@ struct FocusTabView: View {
                             if active {
                                 Capsule()
                                     .fill(Color.white)
-                                    .matchedGeometryEffect(id: "focusModePill", in: viewModeNS)
+                                    .frame(height: 28)
+                                    .matchedGeometryEffect(id: "focusModePill", in: focusNS)
                             }
                             Text(mode.rawValue)
                                 .font(.system(size: 12, weight: .bold, design: .rounded))
-                                .foregroundStyle(active ? Color.black : DailyOSTheme.eyebrow)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 7)
+                                .foregroundStyle(active ? DailyOSTheme.canvas : DailyOSTheme.eyebrow)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 28)
                         }
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(3)
-            .background(DailyOSTheme.buttonSurface, in: Capsule())
-            .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+            .frame(width: 128, height: 34)
+            .fixedSize(horizontal: true, vertical: true)
+            .background(Color(hex: "#16161D"), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1))
 
-            // Quick-Launch Deep Work Timer Button (glows subtly when session is live)
+            // Quick-Launch Deep Work Timer Button (36×36pt)
             FrostedCircleButton(
                 icon: "timer",
                 size: 36,
@@ -186,15 +196,16 @@ struct FocusTabView: View {
                 sessionEngine.shouldPresentTimerSheet = true
             }
 
-            // Quick Add Task Button
-            FrostedCircleButton(icon: "plus", size: 36) {
+            // Quick Add Task Button (36×36pt)
+            FrostedCircleButton(icon: "plus", size: 36, tint: Color.white) {
                 newTaskInitialDate = selectedDate
                 showingNewTaskSheet = true
             }
         }
+        .frame(height: 44)
     }
 
-    // MARK: - DAY VIEW (Monday-First 7-Day Slider + Adaptive Split Timed | Anytime Layout)
+    // MARK: - 2. DAY VIEW (Week Day Strip + To-Do Progress Pill + Clean Full-Width Timed & Anytime Sections)
 
     private var dayModeContent: some View {
         let dayTasks = tasks(for: selectedDate)
@@ -207,287 +218,168 @@ struct FocusTabView: View {
             completedCalendarEventsCount: calCompletedCount,
             totalCalendarEventsCount: daySynced.count
         )
-        let hasTimedColumn = !timedTasks.isEmpty || !daySynced.isEmpty
-        let hasAnytimeColumn = !anytimeTasks.isEmpty
-        let shouldSplitSideBySide = hasTimedColumn && hasAnytimeColumn
 
-        return VStack(spacing: 12) {
-            // 1. Monday-First 7-Day ISO-8601 Week Slider
+        return VStack(alignment: .leading, spacing: 14) {
+            // A. Monday-First 7-Day ISO-8601 Week Slider
             weekSliderCard
-                .padding(.horizontal, 18)
 
-            // 1b. Sleek Compact Dedicated To-Do Progress Ring Pill for Selected Day
+            // B. Compact To-Do Progress Strip
             dayTodoProgressPill(score: todoScore)
-                .padding(.horizontal, 18)
+                .onChange(of: todoScore.percent) { oldVal, newVal in
+                    if todoScore.totalCount > 0 && newVal == 100 && oldVal < 100 {
+                        todo100ShimmerTrigger += 1
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    }
+                }
 
-            // 2. Active Calendar Accountability Banner (only when voluntary check-in proof is active)
+            // C. Active Calendar Accountability Banner (only when voluntary check-in proof is active)
             if let active = focusManager.activeFocusBlock {
                 activeAccountabilityBanner(active)
-                    .padding(.horizontal, 18)
             }
 
-            // 3. Empty vs Side-by-Side Split (Timed 62% | Anytime 38%) vs Full-Width List
+            // D. Clean Full-Width Schedule (Timed -> Calendar -> Anytime) OR Empty State
             if dayTasks.isEmpty && daySynced.isEmpty {
-                ScrollView(showsIndicators: false) {
-                    emptyDayCard
-                        .padding(.horizontal, 18)
-                        .padding(.top, 8)
-                }
-                .refreshable {
-                    await focusManager.syncAllSources()
-                    sessionEngine.evaluateAutoStartSchedule()
-                }
-            } else if shouldSplitSideBySide {
-                GeometryReader { geo in
-                    let usableWidth = max(280, geo.size.width - 36 - 10)
-                    let leftWidth = usableWidth * 0.62
-                    let rightWidth = usableWidth * 0.38
-
-                    ScrollView(showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 10) {
-                            // LEFT PRIMARY COLUMN (~62%): Chronological Timed Tasks & Synced Calendar Blocks
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text(dayHeaderTitle(for: selectedDate))
-                                        .eyebrowStyle()
-                                        .lineLimit(1)
-                                    Spacer(minLength: 2)
-                                    let mins = scheduledMinutes(for: selectedDate)
-                                    if mins > 0 {
-                                        Text(formatScheduledHours(mins))
-                                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                                            .monospacedDigit()
-                                            .foregroundStyle(DailyOSTheme.skyGlow)
-                                    }
-                                }
-
-                                ForEach(Array(timedTasks.enumerated()), id: \.element.id) { idx, task in
-                                    let _ = photoProofScheduler.logRevision
-                                    FocusTaskCardRow(
-                                        task: task,
-                                        isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
-                                        isCompactColumn: true,
-                                        proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
-                                        onToggleComplete: { toggleTaskCompletion(task) },
-                                        onTapEdit: { editingTask = task },
-                                        onTogglePhotoProof: { togglePhotoProof(for: task) },
-                                        onPlayTimer: { launchTimer(for: task) }
-                                    )
-                                    .staggeredEntrance(index: idx)
-                                    .contextMenu {
-                                        Button { moveTaskToTomorrow(task) } label: {
-                                            Label("Move to Tomorrow", systemImage: "arrow.right.circle")
-                                        }
-                                        Button(role: .destructive) { deleteTask(task) } label: {
-                                            Label("Delete Task", systemImage: "trash")
-                                        }
-                                    }
-                                }
-
-                                if !daySynced.isEmpty {
-                                    Text("CALENDAR")
-                                        .eyebrowStyle()
-                                        .padding(.top, timedTasks.isEmpty ? 0 : 4)
-
-                                    ForEach(Array(daySynced.enumerated()), id: \.element.id) { idx, block in
-                                        let _ = photoProofScheduler.logRevision
-                                        let _ = calendarCompletions.revision
-                                        let calKey = CalendarPhotoProofStore.stableKey(for: block)
-                                        let completionKey = CalendarEventCompletionStore.eventKey(for: block)
-                                        let isOptedIn = CalendarPhotoProofStore.isEnabled(forKey: calKey)
-                                        let isDone = calendarCompletions.isCompleted(eventKey: completionKey)
-                                        SyncedFocusBlockRow(
-                                            block: block,
-                                            isCurrent: sessionEngine.activeSession?.id == block.id || focusManager.activeFocusBlock?.id == block.id,
-                                            isCompactColumn: true,
-                                            isCompleted: isDone,
-                                            isPhotoProofEnabled: isOptedIn,
-                                            proofRecord: PhotoProofLogStore.record(for: calKey),
-                                            onToggleComplete: {
-                                                toggleSyncedBlockCompletion(block, calKey: calKey, completionKey: completionKey)
-                                            },
-                                            onTogglePhotoProof: {
-                                                toggleCalendarPhotoProof(for: block, key: calKey, currentlyEnabled: isOptedIn)
-                                            },
-                                            onPlayTimer: {
-                                                launchTimer(for: block, calKey: calKey, isOptedIn: isOptedIn)
-                                            }
-                                        )
-                                        .staggeredEntrance(index: timedTasks.count + idx)
-                                    }
-                                }
-                            }
-                            .frame(width: leftWidth, alignment: .topLeading)
-
-                            // RIGHT COMPACT COLUMN (~38%): Anytime To-Do Checklist Cards
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Text("ANYTIME")
-                                        .eyebrowStyle()
-                                    Spacer(minLength: 2)
-                                    Text("\(anytimeTasks.filter { !$0.isCompleted }.count)")
-                                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(DailyOSTheme.eyebrow)
-                                }
-
-                                ForEach(Array(anytimeTasks.enumerated()), id: \.element.id) { idx, task in
-                                    AnytimeCompactCardRow(
-                                        task: task,
-                                        isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
-                                        onToggleComplete: { toggleTaskCompletion(task) },
-                                        onTapEdit: { editingTask = task },
-                                        onPlayTimer: { launchTimer(for: task) }
-                                    )
-                                    .staggeredEntrance(index: idx)
-                                    .contextMenu {
-                                        Button { moveTaskToTomorrow(task) } label: {
-                                            Label("Move to Tomorrow", systemImage: "arrow.right.circle")
-                                        }
-                                        Button(role: .destructive) { deleteTask(task) } label: {
-                                            Label("Delete Task", systemImage: "trash")
-                                        }
-                                    }
-                                }
-                            }
-                            .frame(width: rightWidth, alignment: .topLeading)
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.bottom, 28)
-                    }
-                    .refreshable {
-                        await focusManager.syncAllSources()
-                        sessionEngine.evaluateAutoStartSchedule()
-                    }
-                }
+                emptyDayCard
+                    .padding(.top, 4)
             } else {
-                // Full-width native List (when only Timed blocks OR only Anytime tasks exist)
-                List {
-                    if !dayTasks.isEmpty {
-                        Section {
-                            ForEach(Array(dayTasks.enumerated()), id: \.element.id) { idx, task in
-                                let _ = photoProofScheduler.logRevision
-                                FocusTaskCardRow(
-                                    task: task,
-                                    isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
-                                    isCompactColumn: false,
-                                    proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
-                                    onToggleComplete: {
-                                        toggleTaskCompletion(task)
-                                    },
-                                    onTapEdit: {
-                                        editingTask = task
-                                    },
-                                    onTogglePhotoProof: {
-                                        togglePhotoProof(for: task)
-                                    },
-                                    onPlayTimer: {
-                                        launchTimer(for: task)
-                                    }
-                                )
-                                .staggeredEntrance(index: idx)
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
-                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        moveTaskToTomorrow(task)
-                                    } label: {
-                                        Label("Tomorrow", systemImage: "arrow.right.circle")
-                                    }
-                                    .tint(DailyOSTheme.skyGlow)
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        deleteTask(task)
-                                    } label: {
-                                        Label("Delete", systemImage: "trash")
-                                    }
-                                }
-                            }
-                        } header: {
-                            HStack {
-                                Text(hasAnytimeColumn && !hasTimedColumn ? "ANYTIME • \(dayHeaderTitle(for: selectedDate))" : dayHeaderTitle(for: selectedDate))
-                                    .eyebrowStyle()
-                                Spacer()
-                                let mins = scheduledMinutes(for: selectedDate)
-                                if mins > 0 {
-                                    Text(formatScheduledHours(mins))
-                                        .font(.system(size: 11, weight: .bold, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(DailyOSTheme.skyGlow)
-                                }
-                            }
-                            .textCase(nil)
-                            .padding(.horizontal, 2)
-                        }
-                    }
-
-                    if !daySynced.isEmpty {
-                        Section {
-                            ForEach(Array(daySynced.enumerated()), id: \.element.id) { idx, block in
-                                let _ = photoProofScheduler.logRevision
-                                let _ = calendarCompletions.revision
-                                let calKey = CalendarPhotoProofStore.stableKey(for: block)
-                                let completionKey = CalendarEventCompletionStore.eventKey(for: block)
-                                let isOptedIn = CalendarPhotoProofStore.isEnabled(forKey: calKey)
-                                let isDone = calendarCompletions.isCompleted(eventKey: completionKey)
-                                SyncedFocusBlockRow(
-                                    block: block,
-                                    isCurrent: sessionEngine.activeSession?.id == block.id || focusManager.activeFocusBlock?.id == block.id,
-                                    isCompactColumn: false,
-                                    isCompleted: isDone,
-                                    isPhotoProofEnabled: isOptedIn,
-                                    proofRecord: PhotoProofLogStore.record(for: calKey),
-                                    onToggleComplete: {
-                                        toggleSyncedBlockCompletion(block, calKey: calKey, completionKey: completionKey)
-                                    },
-                                    onTogglePhotoProof: {
-                                        toggleCalendarPhotoProof(for: block, key: calKey, currentlyEnabled: isOptedIn)
-                                    },
-                                    onPlayTimer: {
-                                        launchTimer(for: block, calKey: calKey, isOptedIn: isOptedIn)
-                                    }
-                                )
-                                .staggeredEntrance(index: idx)
-                                .listRowBackground(Color.clear)
-                                .listRowSeparator(.hidden)
-                                .listRowInsets(EdgeInsets(top: 5, leading: 18, bottom: 5, trailing: 18))
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    if let manualID = block.manualBlockID {
-                                        Button(role: .destructive) {
-                                            focusManager.deleteScheduledTask(id: manualID)
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                                }
-                            }
-                        } header: {
-                            Text("CALENDAR & SYNCED BLOCKS")
+                // Timed Tasks Section
+                if !timedTasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text(dayHeaderTitle(for: selectedDate))
                                 .eyebrowStyle()
-                                .textCase(nil)
-                                .padding(.horizontal, 2)
+                            Spacer()
+                            let mins = scheduledMinutes(for: selectedDate)
+                            if mins > 0 {
+                                Text(formatScheduledHours(mins))
+                                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                                    .monospacedDigit()
+                                    .foregroundStyle(DailyOSTheme.skyGlow)
+                            }
+                        }
+                        .padding(.horizontal, 2)
+
+                        ForEach(Array(timedTasks.enumerated()), id: \.element.id) { idx, task in
+                            let _ = photoProofScheduler.logRevision
+                            FocusTaskCardRow(
+                                task: task,
+                                isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
+                                proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
+                                onToggleComplete: { toggleTaskCompletion(task) },
+                                onTapEdit: { editingTask = task },
+                                onTogglePhotoProof: { togglePhotoProof(for: task) },
+                                onPlayTimer: { launchTimer(for: task) }
+                            )
+                            .staggeredEntrance(index: idx)
+                            .transition(.dailyCardSpring)
+                            .contextMenu {
+                                Button { moveTaskToTomorrow(task) } label: {
+                                    Label("Move to Tomorrow", systemImage: "arrow.right.circle")
+                                }
+                                Button(role: .destructive) { deleteTask(task) } label: {
+                                    Label("Delete Task", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .refreshable {
-                    await focusManager.syncAllSources()
-                    sessionEngine.evaluateAutoStartSchedule()
+
+                // Synced Google / Apple Calendar Blocks Section
+                if !daySynced.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("CALENDAR & SYNCED BLOCKS")
+                            .eyebrowStyle()
+                            .padding(.horizontal, 2)
+                            .padding(.top, timedTasks.isEmpty ? 0 : 4)
+
+                        ForEach(Array(daySynced.enumerated()), id: \.element.id) { idx, block in
+                            let _ = photoProofScheduler.logRevision
+                            let _ = calendarCompletions.revision
+                            let calKey = CalendarPhotoProofStore.stableKey(for: block)
+                            let completionKey = CalendarEventCompletionStore.eventKey(for: block)
+                            let isOptedIn = CalendarPhotoProofStore.isEnabled(forKey: calKey)
+                            let isDone = calendarCompletions.isCompleted(eventKey: completionKey)
+
+                            SyncedFocusBlockRow(
+                                block: block,
+                                isCurrent: sessionEngine.activeSession?.id == block.id || focusManager.activeFocusBlock?.id == block.id,
+                                isCompleted: isDone,
+                                isPhotoProofEnabled: isOptedIn,
+                                proofRecord: PhotoProofLogStore.record(for: calKey),
+                                onToggleComplete: {
+                                    toggleSyncedBlockCompletion(block, calKey: calKey, completionKey: completionKey)
+                                },
+                                onTogglePhotoProof: {
+                                    toggleCalendarPhotoProof(for: block, key: calKey, currentlyEnabled: isOptedIn)
+                                },
+                                onPlayTimer: {
+                                    launchTimer(for: block, calKey: calKey, isOptedIn: isOptedIn)
+                                }
+                            )
+                            .staggeredEntrance(index: idx)
+                            .transition(.dailyCardSpring)
+                            .contextMenu {
+                                if let manualID = block.manualBlockID {
+                                    Button(role: .destructive) {
+                                        focusManager.deleteScheduledTask(id: manualID)
+                                    } label: {
+                                        Label("Delete Block", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Clean Full-Width Anytime Tasks Section Below Timed Blocks
+                if !anytimeTasks.isEmpty {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("ANYTIME")
+                                .eyebrowStyle()
+                            Spacer()
+                            Text("\(anytimeTasks.filter { !$0.isCompleted }.count) left")
+                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                        }
+                        .padding(.horizontal, 2)
+                        .padding(.top, (timedTasks.isEmpty && daySynced.isEmpty) ? 0 : 4)
+
+                        ForEach(Array(anytimeTasks.enumerated()), id: \.element.id) { idx, task in
+                            let _ = photoProofScheduler.logRevision
+                            FocusTaskCardRow(
+                                task: task,
+                                isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
+                                proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
+                                onToggleComplete: { toggleTaskCompletion(task) },
+                                onTapEdit: { editingTask = task },
+                                onTogglePhotoProof: { togglePhotoProof(for: task) },
+                                onPlayTimer: { launchTimer(for: task) }
+                            )
+                            .staggeredEntrance(index: idx)
+                            .transition(.dailyCardSpring)
+                            .contextMenu {
+                                Button { moveTaskToTomorrow(task) } label: {
+                                    Label("Move to Tomorrow", systemImage: "arrow.right.circle")
+                                }
+                                Button(role: .destructive) { deleteTask(task) } label: {
+                                    Label("Delete Task", systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    // MARK: - Dedicated Compact To-Do Progress Ring Pill (Pure Focus Tasks + Calendar Events)
+    // MARK: - Compact To-Do Progress Ring Strip
 
     private func dayTodoProgressPill(score: TodoCompletionScore) -> some View {
         let progress = Double(score.percent) / 100.0
-        let ringTint = score.totalCount > 0 && score.completedCount == score.totalCount
-            ? DailyOSTheme.emerald
-            : DailyOSTheme.skyGlow
+        let isAllDone = score.totalCount > 0 && score.completedCount == score.totalCount
+        let ringTint = isAllDone ? DailyOSTheme.emerald : DailyOSTheme.skyGlow
 
         return HStack(spacing: 10) {
             ZStack {
@@ -499,11 +391,12 @@ struct FocusTabView: View {
                     .stroke(ringTint, style: StrokeStyle(lineWidth: 3, lineCap: .round))
                     .rotationEffect(.degrees(-90))
                     .frame(width: 28, height: 28)
-                    .shadow(color: ringTint.opacity(0.5), radius: 4)
+                    .shadow(color: ringTint.opacity(0.55), radius: 4)
                     .animation(ProMotionSpring.ringFill, value: progress)
 
-                Image(systemName: score.percent == 100 && score.totalCount > 0 ? "checkmark" : "checklist")
+                Image(systemName: isAllDone ? "checkmark" : "checklist")
                     .font(.system(size: 10, weight: .black))
+                    .symbolEffect(.bounce.up, value: score.completedCount)
                     .foregroundStyle(ringTint)
             }
 
@@ -519,6 +412,7 @@ struct FocusTabView: View {
                     .font(.system(size: 13, weight: .bold, design: .rounded))
                     .monospacedDigit()
                     .contentTransition(.numericText())
+                    .animation(ProMotionSpring.ringFill, value: score.completedCount)
                     .foregroundStyle(Color.white)
 
                 Text("•")
@@ -533,11 +427,12 @@ struct FocusTabView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.vertical, 10)
         .ambientCard(accent: ringTint, cornerRadius: 16, washOpacity: 0.08)
+        .midnightShimmer(trigger: todo100ShimmerTrigger, color: ringTint)
     }
 
-    // MARK: - Interactive Monday-First Week Slider Card
+    // MARK: - Interactive Monday-First Week Slider Card (Fixed-Height Equal-Width Day Pills)
 
     private var weekSliderCard: some View {
         VStack(spacing: 10) {
@@ -551,7 +446,7 @@ struct FocusTabView: View {
                         .frame(width: 28, height: 28)
                         .background(DailyOSTheme.inputSurface, in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressButtonStyle())
 
                 Text(weekRangeLabel)
                     .font(.system(size: 13, weight: .bold, design: .rounded))
@@ -564,15 +459,17 @@ struct FocusTabView: View {
                     Button("Today") {
                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         let today = cal.startOfDay(for: Date())
-                        selectedDate = today
-                        weekAnchorDate = ISOWeekCalendar.startOfMondayWeek(for: today)
+                        withAnimation(ProMotionSpring.glide) {
+                            selectedDate = today
+                            weekAnchorDate = ISOWeekCalendar.startOfMondayWeek(for: today)
+                        }
                     }
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .foregroundStyle(Color.black)
                     .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
+                    .frame(height: 26)
                     .background(DailyOSTheme.skyGlow, in: Capsule())
-                    .buttonStyle(.plain)
+                    .buttonStyle(MidnightPressButtonStyle())
                 }
 
                 Button {
@@ -584,10 +481,10 @@ struct FocusTabView: View {
                         .frame(width: 28, height: 28)
                         .background(DailyOSTheme.inputSurface, in: Circle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressButtonStyle())
             }
 
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
                 ForEach(currentWeekDates, id: \.self) { day in
                     let isSelected = cal.isDate(day, inSameDayAs: selectedDate)
                     let isToday = cal.isDateInToday(day)
@@ -608,12 +505,12 @@ struct FocusTabView: View {
                         ZStack {
                             if isSelected {
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
-                                    .fill(DailyOSTheme.inputSurface)
+                                    .fill(DailyOSTheme.skyGlow.opacity(0.18))
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 13, style: .continuous)
                                             .stroke(DailyOSTheme.skyGlow, lineWidth: 1.5)
                                     )
-                                    .matchedGeometryEffect(id: "selectedDayHighlight", in: selectedDayNS)
+                                    .matchedGeometryEffect(id: "selectedDayHighlight", in: focusNS)
                             } else if isToday {
                                 RoundedRectangle(cornerRadius: 13, style: .continuous)
                                     .stroke(DailyOSTheme.skyGlow.opacity(0.32), lineWidth: 1)
@@ -644,72 +541,63 @@ struct FocusTabView: View {
                                     }
                                 }
                             }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
                         }
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 62)
                     }
                     .buttonStyle(.plain)
                 }
             }
         }
         .padding(14)
-        .ambientCard(cornerRadius: 22)
+        .ambientCard(cornerRadius: 20)
     }
 
-    // MARK: - WEEK OVERVIEW MODE (Mon–Sun Open Day Scanner)
+    // MARK: - 3. WEEK OVERVIEW MODE (Mon–Sun Open Day Scanner)
 
     private var weekModeContent: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(spacing: 12) {
-                // Week Navigation Header
-                HStack {
-                    Button { shiftWeek(by: -1) } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color.white)
-                            .frame(width: 34, height: 34)
-                            .background(DailyOSTheme.buttonSurface, in: Circle())
-                            .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-
-                    VStack(spacing: 2) {
-                        Text(weekRangeLabel)
-                            .font(.system(size: 16, weight: .bold, design: .rounded))
-                            .foregroundStyle(Color.white)
-                        Text("Tap a day to focus • Tap + to drop a task")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.eyebrow)
-                    }
-
-                    Spacer()
-
-                    Button { shiftWeek(by: 1) } label: {
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(Color.white)
-                            .frame(width: 34, height: 34)
-                            .background(DailyOSTheme.buttonSurface, in: Circle())
-                            .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
-                    }
-                    .buttonStyle(.plain)
+        VStack(spacing: 12) {
+            HStack {
+                Button { shiftWeek(by: -1) } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 34, height: 34)
+                        .background(DailyOSTheme.buttonSurface, in: Circle())
+                        .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
                 }
-                .padding(.horizontal, 18)
+                .buttonStyle(MidnightPressButtonStyle())
 
-                // 7-Day Monday-to-Sunday Overview Cards
-                VStack(spacing: 10) {
-                    ForEach(currentWeekDates, id: \.self) { day in
-                        weekDayOverviewCard(for: day)
-                    }
+                Spacer()
+
+                VStack(spacing: 2) {
+                    Text(weekRangeLabel)
+                        .font(.system(size: 16, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                    Text("Tap a day to focus • Tap + to add a task")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
                 }
-                .padding(.horizontal, 18)
-                .padding(.bottom, 32)
+
+                Spacer()
+
+                Button { shiftWeek(by: 1) } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(Color.white)
+                        .frame(width: 34, height: 34)
+                        .background(DailyOSTheme.buttonSurface, in: Circle())
+                        .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
+                }
+                .buttonStyle(MidnightPressButtonStyle())
             }
-        }
-        .refreshable {
-            await focusManager.syncAllSources()
+
+            VStack(spacing: 10) {
+                ForEach(Array(currentWeekDates.enumerated()), id: \.element) { idx, day in
+                    weekDayOverviewCard(for: day)
+                        .staggeredEntrance(index: idx)
+                }
+            }
         }
     }
 
@@ -725,7 +613,7 @@ struct FocusTabView: View {
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     selectedDate = day
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) {
+                    withAnimation(ProMotionSpring.glide) {
                         viewMode = .day
                     }
                 } label: {
@@ -748,7 +636,6 @@ struct FocusTabView: View {
 
                 Spacer()
 
-                // Scheduled Hours or "Open" Badge
                 Text(isOpenDay ? "Open" : "\(formatScheduledHours(mins)) scheduled")
                     .font(.system(size: 11, weight: .bold, design: .rounded))
                     .monospacedDigit()
@@ -760,7 +647,6 @@ struct FocusTabView: View {
                         in: Capsule()
                     )
 
-                // Inline + Button to Drop a Task Straight onto This Day
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     selectedDate = day
@@ -774,10 +660,9 @@ struct FocusTabView: View {
                         .background(DailyOSTheme.buttonSurface, in: Circle())
                         .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressButtonStyle())
             }
 
-            // Compact 1-Line Task & Block Previews
             if !isOpenDay {
                 VStack(alignment: .leading, spacing: 6) {
                     ForEach(dayTasks) { task in
@@ -823,25 +708,25 @@ struct FocusTabView: View {
         .ambientCard(accent: isToday ? DailyOSTheme.skyGlow : nil, cornerRadius: 18, washOpacity: 0.08)
     }
 
-    // MARK: - Empty Day Card & Active Accountability Banner
+    // MARK: - Empty Day Card (Full-Width High-Contrast Buttons Well Above Tab Bar)
 
     private var emptyDayCard: some View {
         VStack(spacing: 14) {
             Image(systemName: "checklist")
-                .font(.system(size: 30, weight: .medium))
+                .font(.system(size: 28, weight: .medium))
                 .foregroundStyle(DailyOSTheme.skyGlow)
-                .frame(width: 56, height: 56)
+                .frame(width: 54, height: 54)
                 .background(DailyOSTheme.skyGlow.opacity(0.14), in: Circle())
 
             Text("Clear Schedule for \(dayShortTitle(for: selectedDate))")
                 .font(.system(size: 17, weight: .bold, design: .rounded))
                 .foregroundStyle(Color.white)
 
-            Text("Add a task with duration & place, or tap the timer icon to launch a Deep Work session.")
+            Text("Add a timed block or anytime task, or jump straight into a Deep Work session.")
                 .font(.system(size: 13, weight: .medium, design: .rounded))
                 .foregroundStyle(DailyOSTheme.eyebrow)
                 .multilineTextAlignment(.center)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
 
             HStack(spacing: 10) {
                 Button {
@@ -851,11 +736,11 @@ struct FocusTabView: View {
                     Label("Add Task", systemImage: "plus")
                         .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.black)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 11)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
                         .background(DailyOSTheme.skyGlow, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressButtonStyle())
 
                 Button {
                     sessionEngine.shouldPresentTimerSheet = true
@@ -863,17 +748,17 @@ struct FocusTabView: View {
                     Label("Deep Work", systemImage: "timer")
                         .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundStyle(Color.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 11)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
                         .background(DailyOSTheme.buttonSurface, in: Capsule())
                         .overlay(Capsule().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressButtonStyle())
             }
             .padding(.top, 4)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 28)
+        .padding(.vertical, 24)
         .padding(.horizontal, 18)
         .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.06)
     }
@@ -901,7 +786,7 @@ struct FocusTabView: View {
                         .padding(.vertical, 8)
                         .background(DailyOSTheme.solarAccent, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressButtonStyle())
             }
         }
         .padding(12)
@@ -915,7 +800,9 @@ struct FocusTabView: View {
     // MARK: - Task Actions
 
     private func toggleTaskCompletion(_ task: FocusTaskItem) {
-        task.isCompleted.toggle()
+        withAnimation(ProMotionSpring.glide) {
+            task.isCompleted.toggle()
+        }
         let taskID = task.id.uuidString
         if task.isCompleted {
             PhotoProofScheduler.shared.cancelProofs(for: taskID)
@@ -923,7 +810,7 @@ struct FocusTabView: View {
             if sessionEngine.activeSession?.id == taskID {
                 sessionEngine.endCurrentSession(markDismissedIfScheduled: true)
             }
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } else {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
@@ -940,7 +827,7 @@ struct FocusTabView: View {
             if sessionEngine.activeSession?.id == block.id {
                 sessionEngine.endCurrentSession(markDismissedIfScheduled: true)
             }
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } else {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
@@ -955,6 +842,7 @@ struct FocusTabView: View {
 
         let taskID = task.id.uuidString
         if task.requiresPhotoProof {
+            PhotoProofScheduler.shared.ensureNotificationAuthorization()
             if let scheduledStart = task.startTime {
                 PhotoProofScheduler.shared.scheduleProofs(
                     taskID: taskID,
@@ -979,6 +867,7 @@ struct FocusTabView: View {
         let next = !currentlyEnabled
         CalendarPhotoProofStore.setEnabled(next, forKey: key)
         if next {
+            PhotoProofScheduler.shared.ensureNotificationAuthorization()
             PhotoProofScheduler.shared.scheduleProofs(
                 taskID: key,
                 taskTitle: block.title,
@@ -1107,11 +996,13 @@ struct FocusTabView: View {
 
     private func shiftWeek(by weeks: Int) {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        if let shiftedAnchor = cal.date(byAdding: .day, value: weeks * 7, to: weekAnchorDate) {
-            weekAnchorDate = shiftedAnchor
-        }
-        if let shiftedDay = cal.date(byAdding: .day, value: weeks * 7, to: selectedDate) {
-            selectedDate = shiftedDay
+        withAnimation(ProMotionSpring.glide) {
+            if let shiftedAnchor = cal.date(byAdding: .day, value: weeks * 7, to: weekAnchorDate) {
+                weekAnchorDate = shiftedAnchor
+            }
+            if let shiftedDay = cal.date(byAdding: .day, value: weeks * 7, to: selectedDate) {
+                selectedDate = shiftedDay
+            }
         }
         Task { await focusManager.syncAllSources() }
     }
@@ -1165,19 +1056,16 @@ struct FocusTabView: View {
     private func formatScheduledHours(_ mins: Int) -> String {
         if mins < 60 { return "\(mins)m" }
         let hours = Double(mins) / 60.0
-        if mins % 60 == 0 {
-            return "\(mins / 60)h"
-        }
+        if mins % 60 == 0 { return "\(mins / 60)h" }
         return String(format: "%.1fh", hours)
     }
 }
 
-// MARK: - Glanceable Focus Task Card Row (Full-Width or Compact Split Column)
+// MARK: - Full-Width Crisp Focus Task Card Row (Left Accent Timeline + Visible Burst Check-Off)
 
 private struct FocusTaskCardRow: View {
     let task: FocusTaskItem
     let isLiveNow: Bool
-    let isCompactColumn: Bool
     let proofRecord: PhotoProofTaskRecord?
     let onToggleComplete: () -> Void
     let onTapEdit: () -> Void
@@ -1187,42 +1075,54 @@ private struct FocusTaskCardRow: View {
     @State private var burstTrigger: Int = 0
     @State private var pulseLiveDot: Bool = false
 
+    private var timelineAccent: Color {
+        if task.isCompleted { return DailyOSTheme.emerald }
+        if isLiveNow { return DailyOSTheme.emerald }
+        return task.startTime != nil ? DailyOSTheme.skyGlow : DailyOSTheme.indigoGlow
+    }
+
     var body: some View {
-        HStack(spacing: isCompactColumn ? 8 : 11) {
-            // Left: One-Tap Completion Check Circle with 8-Spark Burst
+        HStack(spacing: 11) {
+            // Left Vertical Accent Timeline Bar
+            Capsule()
+                .fill(timelineAccent.opacity(task.isCompleted ? 0.45 : 0.90))
+                .frame(width: 3, height: 40)
+
+            // 1-Tap Completion Check Circle with Visible 8-Spark Burst & Pop Bounce
             Button {
                 if !task.isCompleted { burstTrigger += 1 }
                 onToggleComplete()
             } label: {
                 ZStack {
-                    CompletionBurstView(trigger: burstTrigger, color: DailyOSTheme.emerald, size: 46)
+                    CheckInBurstEffect(trigger: burstTrigger, color: DailyOSTheme.emerald)
                     Circle()
                         .fill(task.isCompleted ? DailyOSTheme.emerald : Color.clear)
-                        .frame(width: isCompactColumn ? 23 : 26, height: isCompactColumn ? 23 : 26)
+                        .frame(width: 26, height: 26)
                         .overlay(
                             Circle()
                                 .stroke(task.isCompleted ? DailyOSTheme.emerald : Color.white.opacity(0.28), lineWidth: 2)
                         )
                     if task.isCompleted {
                         Image(systemName: "checkmark")
-                            .font(.system(size: isCompactColumn ? 10 : 12, weight: .black))
+                            .font(.system(size: 12, weight: .black))
                             .foregroundStyle(DailyOSTheme.canvas)
                     }
                 }
+                .checkPopBounce(trigger: burstTrigger)
             }
             .buttonStyle(MidnightPressButtonStyle())
 
-            // Center: Bold Title (+ Live Pulse Dot when active) + Time/Duration Pill + Place Pill + Proof Chip
+            // Center: Bold Title + Time/Duration Pill + Optional Location + Proof Status
             Button(action: onTapEdit) {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 5) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
                         if isLiveNow && !task.isCompleted {
                             Circle()
                                 .fill(DailyOSTheme.emerald)
                                 .frame(width: 7, height: 7)
-                                .scaleEffect(pulseLiveDot ? 1.25 : 0.85)
+                                .scaleEffect(pulseLiveDot ? 1.28 : 0.85)
                                 .opacity(pulseLiveDot ? 1.0 : 0.55)
-                                .shadow(color: DailyOSTheme.emerald.opacity(0.8), radius: 4)
+                                .shadow(color: DailyOSTheme.emerald.opacity(0.85), radius: 4)
                                 .onAppear {
                                     withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
                                         pulseLiveDot = true
@@ -1231,31 +1131,31 @@ private struct FocusTaskCardRow: View {
                         }
 
                         Text(task.title)
-                            .font(.system(size: isCompactColumn ? 13 : 15, weight: .bold, design: .rounded))
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
                             .strikethrough(task.isCompleted, color: DailyOSTheme.eyebrow)
                             .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : Color.white)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
                     }
 
-                    HStack(spacing: 5) {
-                        HStack(spacing: 3) {
+                    HStack(spacing: 6) {
+                        HStack(spacing: 4) {
                             Image(systemName: task.startTime != nil ? "clock" : "hourglass")
-                                .font(.system(size: 9, weight: .bold))
-                            Text(isCompactColumn ? task.formattedCompactPrefix : task.formattedTimeRangeAndDuration)
-                                .font(.system(size: isCompactColumn ? 10 : 11, weight: .semibold, design: .rounded))
+                                .font(.system(size: 10, weight: .bold))
+                            Text(task.formattedTimeRangeAndDuration)
+                                .font(.system(size: 11, weight: .semibold, design: .rounded))
                                 .monospacedDigit()
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow)
-                        .padding(.horizontal, isCompactColumn ? 6 : 8)
-                        .padding(.vertical, 3.5)
+                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : timelineAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
                         .background(
-                            (task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow).opacity(0.14),
+                            (task.isCompleted ? DailyOSTheme.eyebrow : timelineAccent).opacity(0.14),
                             in: Capsule()
                         )
 
-                        if !isCompactColumn && !task.trimmedLocation.isEmpty {
+                        if !task.trimmedLocation.isEmpty {
                             HStack(spacing: 4) {
                                 Image(systemName: "mappin.and.ellipse")
                                     .font(.system(size: 10, weight: .bold))
@@ -1270,7 +1170,7 @@ private struct FocusTaskCardRow: View {
                             .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
                         }
 
-                        if task.requiresPhotoProof && !isCompactColumn {
+                        if task.requiresPhotoProof {
                             PhotoProofStatusBadge(record: proofRecord)
                         }
                     }
@@ -1280,35 +1180,33 @@ private struct FocusTaskCardRow: View {
             }
             .buttonStyle(.plain)
 
-            // Right: 1-Tap Camera Proof Toggle Pill + Compact Circular Play Button
-            HStack(spacing: isCompactColumn ? 4 : 7) {
-                if !isCompactColumn {
-                    Button(action: onTogglePhotoProof) {
-                        Image(systemName: task.requiresPhotoProof ? "camera.fill" : "camera")
-                            .font(.system(size: 12, weight: .semibold))
-                            .symbolEffect(.bounce, value: task.requiresPhotoProof)
-                            .foregroundStyle(task.requiresPhotoProof ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
-                            .frame(width: 32, height: 32)
-                            .background(
-                                task.requiresPhotoProof ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
-                                in: Circle()
+            // Right: 1-Tap Camera Photo-Proof Toggle Pill + Play Button
+            HStack(spacing: 7) {
+                Button(action: onTogglePhotoProof) {
+                    Image(systemName: task.requiresPhotoProof ? "camera.fill" : "camera")
+                        .font(.system(size: 12, weight: .semibold))
+                        .symbolEffect(.bounce, value: task.requiresPhotoProof)
+                        .foregroundStyle(task.requiresPhotoProof ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            task.requiresPhotoProof ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
+                            in: Circle()
+                        )
+                        .overlay(
+                            Circle().stroke(
+                                task.requiresPhotoProof ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
+                                lineWidth: 1
                             )
-                            .overlay(
-                                Circle().stroke(
-                                    task.requiresPhotoProof ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
-                                    lineWidth: 1
-                                )
-                            )
-                    }
-                    .buttonStyle(MidnightPressButtonStyle())
-                    .accessibilityLabel(task.requiresPhotoProof ? "Disable Photo Proof" : "Enable Photo Proof")
+                        )
                 }
+                .buttonStyle(MidnightPressButtonStyle())
+                .accessibilityLabel(task.requiresPhotoProof ? "Disable Photo Proof" : "Enable Photo Proof")
 
                 Button(action: onPlayTimer) {
                     Image(systemName: isLiveNow ? "waveform" : "play.fill")
-                        .font(.system(size: isCompactColumn ? 10 : 12, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : (isLiveNow ? DailyOSTheme.emerald : DailyOSTheme.skyGlow))
-                        .frame(width: isCompactColumn ? 28 : 34, height: isCompactColumn ? 28 : 34)
+                        .frame(width: 34, height: 34)
                         .background(
                             (task.isCompleted
                              ? DailyOSTheme.inputSurface
@@ -1327,94 +1225,13 @@ private struct FocusTaskCardRow: View {
                 .buttonStyle(MidnightPressButtonStyle())
             }
         }
-        .padding(isCompactColumn ? 10 : 14)
+        .padding(14)
         .ambientCard(
             accent: isLiveNow
                 ? DailyOSTheme.emerald
                 : (task.isCompleted ? DailyOSTheme.emerald : (task.requiresPhotoProof ? DailyOSTheme.skyGlow : nil)),
-            cornerRadius: isCompactColumn ? 15 : 18,
+            cornerRadius: 18,
             washOpacity: isLiveNow ? 0.12 : 0.06
-        )
-    }
-}
-
-// MARK: - Compact Right-Column Anytime Card (Split Day View)
-
-private struct AnytimeCompactCardRow: View {
-    let task: FocusTaskItem
-    let isLiveNow: Bool
-    let onToggleComplete: () -> Void
-    let onTapEdit: () -> Void
-    let onPlayTimer: () -> Void
-
-    @State private var burstTrigger: Int = 0
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack(alignment: .top, spacing: 7) {
-                Button {
-                    if !task.isCompleted { burstTrigger += 1 }
-                    onToggleComplete()
-                } label: {
-                    ZStack {
-                        CompletionBurstView(trigger: burstTrigger, color: DailyOSTheme.emerald, size: 38)
-                        Circle()
-                            .fill(task.isCompleted ? DailyOSTheme.emerald : Color.clear)
-                            .frame(width: 20, height: 20)
-                            .overlay(
-                                Circle()
-                                    .stroke(task.isCompleted ? DailyOSTheme.emerald : Color.white.opacity(0.30), lineWidth: 1.8)
-                            )
-                        if task.isCompleted {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 9, weight: .black))
-                                .foregroundStyle(DailyOSTheme.canvas)
-                        }
-                    }
-                }
-                .buttonStyle(MidnightPressButtonStyle())
-
-                Button(action: onTapEdit) {
-                    Text(task.title)
-                        .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                        .strikethrough(task.isCompleted, color: DailyOSTheme.eyebrow)
-                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : Color.white)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-            }
-
-            HStack {
-                Text("\(task.durationMinutes)m")
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                    .monospacedDigit()
-                    .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.periwinkle)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2.5)
-                    .background(
-                        (task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.periwinkle).opacity(0.14),
-                        in: Capsule()
-                    )
-
-                Spacer(minLength: 2)
-
-                Button(action: onPlayTimer) {
-                    Image(systemName: isLiveNow ? "waveform" : "play.fill")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow)
-                        .frame(width: 22, height: 22)
-                        .background(DailyOSTheme.inputSurface, in: Circle())
-                }
-                .buttonStyle(MidnightPressButtonStyle())
-            }
-        }
-        .padding(10)
-        .ambientCard(
-            accent: isLiveNow ? DailyOSTheme.emerald : (task.isCompleted ? DailyOSTheme.emerald : nil),
-            cornerRadius: 14,
-            washOpacity: isLiveNow ? 0.12 : 0.05
         )
     }
 }
@@ -1426,8 +1243,8 @@ private struct PhotoProofStatusBadge: View {
         let status = record?.lastStatus ?? .armed
         let label: String = {
             switch status {
-            case .verified: return "Verified ✓"
-            case .missed: return "Missed ✕"
+            case .verified: return "Verified"
+            case .missed: return "Missed"
             case .armed: return "Proof Armed"
             }
         }()
@@ -1453,7 +1270,6 @@ private struct PhotoProofStatusBadge: View {
 private struct SyncedFocusBlockRow: View {
     let block: FocusBlockDisplayItem
     let isCurrent: Bool
-    let isCompactColumn: Bool
     let isCompleted: Bool
     let isPhotoProofEnabled: Bool
     let proofRecord: PhotoProofTaskRecord?
@@ -1483,40 +1299,43 @@ private struct SyncedFocusBlockRow: View {
     }
 
     var body: some View {
-        HStack(spacing: isCompactColumn ? 8 : 11) {
-            // Left: 1-Tap Circular Completion Checkbox with 8-Spark Burst
+        HStack(spacing: 11) {
+            Capsule()
+                .fill((isCompleted ? DailyOSTheme.emerald : sourceColor).opacity(isCompleted ? 0.45 : 0.90))
+                .frame(width: 3, height: 40)
+
             Button {
                 if !isCompleted { burstTrigger += 1 }
                 onToggleComplete()
             } label: {
                 ZStack {
-                    CompletionBurstView(trigger: burstTrigger, color: DailyOSTheme.emerald, size: 46)
+                    CheckInBurstEffect(trigger: burstTrigger, color: DailyOSTheme.emerald)
                     Circle()
                         .fill(isCompleted ? DailyOSTheme.emerald : Color.clear)
-                        .frame(width: isCompactColumn ? 23 : 26, height: isCompactColumn ? 23 : 26)
+                        .frame(width: 26, height: 26)
                         .overlay(
                             Circle()
                                 .stroke(isCompleted ? DailyOSTheme.emerald : Color.white.opacity(0.28), lineWidth: 2)
                         )
                     if isCompleted {
                         Image(systemName: "checkmark")
-                            .font(.system(size: isCompactColumn ? 10 : 12, weight: .black))
+                            .font(.system(size: 12, weight: .black))
                             .foregroundStyle(DailyOSTheme.canvas)
                     }
                 }
+                .checkPopBounce(trigger: burstTrigger)
             }
             .buttonStyle(MidnightPressButtonStyle())
 
-            // Center: Bold Event Title (+ Live Pulse Dot) + Time/Duration Pill + Optional Location + Source
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 5) {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
                     if isCurrent && !isCompleted {
                         Circle()
                             .fill(DailyOSTheme.emerald)
                             .frame(width: 7, height: 7)
-                            .scaleEffect(pulseLiveDot ? 1.25 : 0.85)
+                            .scaleEffect(pulseLiveDot ? 1.28 : 0.85)
                             .opacity(pulseLiveDot ? 1.0 : 0.55)
-                            .shadow(color: DailyOSTheme.emerald.opacity(0.8), radius: 4)
+                            .shadow(color: DailyOSTheme.emerald.opacity(0.85), radius: 4)
                             .onAppear {
                                 withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
                                     pulseLiveDot = true
@@ -1525,30 +1344,30 @@ private struct SyncedFocusBlockRow: View {
                     }
 
                     Text(block.title)
-                        .font(.system(size: isCompactColumn ? 13 : 15, weight: .bold, design: .rounded))
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
                         .strikethrough(isCompleted, color: DailyOSTheme.eyebrow)
                         .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : Color.white)
                         .lineLimit(2)
                 }
 
-                HStack(spacing: 5) {
-                    HStack(spacing: 3) {
+                HStack(spacing: 6) {
+                    HStack(spacing: 4) {
                         Image(systemName: "clock")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                         Text(block.formattedTimeAndDuration)
-                            .font(.system(size: isCompactColumn ? 10 : 11, weight: .semibold, design: .rounded))
+                            .font(.system(size: 11, weight: .semibold, design: .rounded))
                             .monospacedDigit()
                             .lineLimit(1)
                     }
                     .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : sourceColor)
-                    .padding(.horizontal, isCompactColumn ? 6 : 8)
-                    .padding(.vertical, 3.5)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                     .background(
                         (isCompleted ? DailyOSTheme.eyebrow : sourceColor).opacity(0.14),
                         in: Capsule()
                     )
 
-                    if !isCompactColumn && !block.trimmedLocation.isEmpty {
+                    if !block.trimmedLocation.isEmpty {
                         HStack(spacing: 4) {
                             Image(systemName: "mappin.and.ellipse")
                                 .font(.system(size: 10, weight: .bold))
@@ -1563,51 +1382,46 @@ private struct SyncedFocusBlockRow: View {
                         .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
                     }
 
-                    if !isCompactColumn {
-                        Text(compactSourceTag)
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.eyebrow)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 3)
-                            .background(DailyOSTheme.inputSurface, in: Capsule())
-                            .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                    Text(compactSourceTag)
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(DailyOSTheme.inputSurface, in: Capsule())
+                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
 
-                        if isPhotoProofEnabled {
-                            PhotoProofStatusBadge(record: proofRecord)
-                        }
+                    if isPhotoProofEnabled {
+                        PhotoProofStatusBadge(record: proofRecord)
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            // Right: Inline Camera Photo-Proof Toggle + Play Deep Work Timer Button
-            HStack(spacing: isCompactColumn ? 4 : 7) {
-                if !isCompactColumn {
-                    Button(action: onTogglePhotoProof) {
-                        Image(systemName: isPhotoProofEnabled ? "camera.fill" : "camera")
-                            .font(.system(size: 12, weight: .semibold))
-                            .symbolEffect(.bounce, value: isPhotoProofEnabled)
-                            .foregroundStyle(isPhotoProofEnabled ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
-                            .frame(width: 32, height: 32)
-                            .background(
-                                isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
-                                in: Circle()
+            HStack(spacing: 7) {
+                Button(action: onTogglePhotoProof) {
+                    Image(systemName: isPhotoProofEnabled ? "camera.fill" : "camera")
+                        .font(.system(size: 12, weight: .semibold))
+                        .symbolEffect(.bounce, value: isPhotoProofEnabled)
+                        .foregroundStyle(isPhotoProofEnabled ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
+                            in: Circle()
+                        )
+                        .overlay(
+                            Circle().stroke(
+                                isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
+                                lineWidth: 1
                             )
-                            .overlay(
-                                Circle().stroke(
-                                    isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
-                                    lineWidth: 1
-                                )
-                            )
-                    }
-                    .buttonStyle(MidnightPressButtonStyle())
+                        )
                 }
+                .buttonStyle(MidnightPressButtonStyle())
 
                 Button(action: onPlayTimer) {
                     Image(systemName: isCurrent ? "waveform" : "play.fill")
-                        .font(.system(size: isCompactColumn ? 10 : 12, weight: .bold))
+                        .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : (isCurrent ? DailyOSTheme.emerald : sourceColor))
-                        .frame(width: isCompactColumn ? 28 : 34, height: isCompactColumn ? 28 : 34)
+                        .frame(width: 34, height: 34)
                         .background(
                             (isCompleted ? DailyOSTheme.inputSurface : (isCurrent ? DailyOSTheme.emerald.opacity(0.18) : sourceColor.opacity(0.15))),
                             in: Circle()
@@ -1616,33 +1430,34 @@ private struct SyncedFocusBlockRow: View {
                 .buttonStyle(MidnightPressButtonStyle())
             }
         }
-        .padding(isCompactColumn ? 10 : 14)
+        .padding(14)
         .ambientCard(
             accent: isCurrent ? DailyOSTheme.emerald : (isCompleted ? DailyOSTheme.emerald : (isPhotoProofEnabled ? DailyOSTheme.skyGlow : nil)),
-            cornerRadius: isCompactColumn ? 15 : 18,
+            cornerRadius: 18,
             washOpacity: isCurrent ? 0.12 : 0.08
         )
     }
 }
 
-// MARK: - Full-Screen Midnight Obsidian Active Deep Work & Auto-Schedule Timer Sheet
+// MARK: - Ultra-Clean Full-Screen Midnight Obsidian Focus Timer Sheet (Zero PiP, Zero Double Checkmarks, Zero Manual Proof)
 
 struct FocusActiveTimerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var sessionEngine = FocusAutoSessionEngine.shared
-    @ObservedObject private var pipManager = FocusPiPManager.shared
-    @ObservedObject private var focusManager = FocusAccountabilityManager.shared
 
+    @State private var celebrationBounceTrigger: Int = 0
     private let presets: [Int] = [15, 25, 45, 60, 90]
 
     private var ringAccent: Color {
-        switch sessionEngine.completionOverlay {
-        case .celebrating: return DailyOSTheme.emerald
-        case .nextUp(let info, _): return info.isAllClear ? DailyOSTheme.emerald : DailyOSTheme.indigoGlow
-        case .none:
-            if !sessionEngine.hasLiveSession { return DailyOSTheme.skyGlow }
-            return sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")
+        if case .completed = sessionEngine.completionOverlay {
+            return DailyOSTheme.emerald
         }
+        if !sessionEngine.hasLiveSession { return DailyOSTheme.skyGlow }
+        return sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")
+    }
+
+    private var shouldShowDeepWorkEyebrow: Bool {
+        sessionEngine.sessionTitle.caseInsensitiveCompare("Deep Work") != .orderedSame
     }
 
     var body: some View {
@@ -1650,7 +1465,7 @@ struct FocusActiveTimerSheet: View {
             DailyOSTheme.canvas.ignoresSafeArea()
 
             RadialGradient(
-                colors: [ringAccent.opacity(0.14), Color.clear],
+                colors: [ringAccent.opacity(0.15), Color.clear],
                 center: .center,
                 startRadius: 40,
                 endRadius: 275
@@ -1658,82 +1473,36 @@ struct FocusActiveTimerSheet: View {
             .ignoresSafeArea()
 
             VStack(spacing: 0) {
-                // Top Bar: Minimize + Status + Floating PiP Pill Launch Button
+                // Clean Top Header: Dismiss Left + Centered Time Window / FOCUS SESSION + Balanced Right Spacer
                 HStack {
                     FrostedCircleButton(icon: "chevron.down", size: 40) {
-                        sessionEngine.restoredFromPiP = false
+                        sessionEngine.dismissCompletionOverlay()
                         sessionEngine.shouldPresentTimerSheet = false
                         dismiss()
                     }
 
                     Spacer()
 
-                    VStack(spacing: 2) {
-                        Text(sessionEngine.hasLiveSession ? "Swipe away for Floating Pill" : "Deep Work Timer")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.eyebrow)
-                        if sessionEngine.activeSession?.isScheduledWallClock == true {
-                            Text("Wall-clock schedule running")
-                                .font(.system(size: 10, weight: .bold, design: .rounded))
-                                .foregroundStyle(DailyOSTheme.skyGlow)
-                        }
-                    }
+                    Text(sessionEngine.sessionTimeWindowLabel)
+                        .font(.system(size: 11.5, weight: .bold, design: .rounded))
+                        .tracking(1.3)
+                        .textCase(.uppercase)
+                        .monospacedDigit()
+                        .foregroundStyle(DailyOSTheme.eyebrow)
 
                     Spacer()
 
-                    FrostedCircleButton(
-                        icon: "pip.enter",
-                        size: 40,
-                        tint: pipManager.isPiPActive ? DailyOSTheme.emerald : DailyOSTheme.skyGlow
-                    ) {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        if !sessionEngine.hasLiveSession && sessionEngine.completionOverlay == .none {
-                            sessionEngine.setDeepWorkTracking(true)
-                        }
-                        pipManager.startPiPManuallyIfSupported()
-                    }
+                    Color.clear.frame(width: 40, height: 40)
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 14)
 
-                // Quick "✓ Mark Done" Action Banner (when restored from PiP or live session is near/at completion)
-                if sessionEngine.hasLiveSession && (sessionEngine.restoredFromPiP || sessionEngine.elapsedProgressFraction >= 0.85) {
-                    Button {
-                        withAnimation(ProMotionSpring.pop) {
-                            sessionEngine.completeActiveTaskAndCelebrate()
-                        }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 15, weight: .bold))
-                            Text("Finished \"\(sessionEngine.sessionTitle)\"? Tap to Mark Done")
-                                .font(.system(size: 12.5, weight: .bold, design: .rounded))
-                                .lineLimit(1)
-                            Spacer(minLength: 4)
-                            Text("✓ Mark Done")
-                                .font(.system(size: 11, weight: .black, design: .rounded))
-                                .foregroundStyle(Color.black)
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(DailyOSTheme.emerald, in: Capsule())
-                        }
-                        .foregroundStyle(DailyOSTheme.emerald)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
-                        .ambientCard(accent: DailyOSTheme.emerald, cornerRadius: 16, washOpacity: 0.14)
-                    }
-                    .buttonStyle(MidnightPressButtonStyle())
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-
                 Spacer()
 
-                // Centerpiece: Two-Phase Completion Celebration / Next-Up Card OR Calm Elapsed-of-Total Ring
+                // Main Centerpiece: "Good Job!" + Next Up Celebration OR Glowing Elapsed-of-Total Ring
                 switch sessionEngine.completionOverlay {
-                case .celebrating(let focusedMins, let completedTitle, _, _):
-                    VStack(spacing: 16) {
+                case .completed(let focusedMins, let completedTitle, let nextUp):
+                    VStack(spacing: 18) {
                         ZStack {
                             OrganicBreathingAura(color: DailyOSTheme.emerald, diameter: 250)
                             Circle()
@@ -1742,164 +1511,221 @@ struct FocusActiveTimerSheet: View {
                                 .overlay(Circle().stroke(DailyOSTheme.emerald, lineWidth: 3))
                             Image(systemName: "checkmark")
                                 .font(.system(size: 46, weight: .black))
+                                .symbolEffect(.bounce.up, value: celebrationBounceTrigger)
                                 .foregroundStyle(DailyOSTheme.emerald)
                         }
 
-                        Text("✓ GOOD JOB! • \(focusedMins)m focused")
-                            .font(.system(size: 24, weight: .black, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(DailyOSTheme.emerald)
+                        VStack(spacing: 6) {
+                            Text("Good Job!")
+                                .font(.system(size: 30, weight: .black, design: .rounded))
+                                .foregroundStyle(Color.white)
 
-                        Text("Completed \"\(completedTitle)\"")
-                            .font(.system(size: 15, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.84))
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 28)
-                    }
-                    .transition(.scale(scale: 0.94).combined(with: .opacity))
+                            Text("\(focusedMins)m focused")
+                                .font(.system(size: 17, weight: .bold, design: .rounded))
+                                .monospacedDigit()
+                                .foregroundStyle(DailyOSTheme.emerald)
 
-                case .nextUp(let info, _):
-                    VStack(spacing: 16) {
-                        ZStack {
-                            OrganicBreathingAura(color: ringAccent, diameter: 230)
-                            Circle()
-                                .fill(ringAccent.opacity(0.18))
-                                .frame(width: 96, height: 96)
-                                .overlay(Circle().stroke(ringAccent.opacity(0.7), lineWidth: 2.5))
-                            Image(systemName: info.isAllClear ? "sparkles" : "calendar.badge.clock")
-                                .font(.system(size: 38, weight: .bold))
-                                .foregroundStyle(ringAccent)
+                            Text("Completed \(completedTitle)")
+                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 28)
                         }
 
-                        Text(info.headline)
-                            .font(.system(size: 21, weight: .black, design: .rounded))
-                            .foregroundStyle(info.isAllClear ? DailyOSTheme.emerald : Color.white)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 24)
-
-                        Text(info.subtitle)
-                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.eyebrow)
-                            .multilineTextAlignment(.center)
+                        // Next Scheduled Task Preview Card
+                        VStack(spacing: 4) {
+                            Text(nextUp.headline)
+                                .font(.system(size: 15, weight: .bold, design: .rounded))
+                                .foregroundStyle(nextUp.isAllClear ? DailyOSTheme.emerald : Color.white)
+                                .multilineTextAlignment(.center)
+                            Text(nextUp.subtitle)
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 14)
+                        .ambientCard(
+                            accent: nextUp.isAllClear ? DailyOSTheme.emerald : DailyOSTheme.indigoGlow,
+                            cornerRadius: 18,
+                            washOpacity: 0.10
+                        )
+                        .padding(.horizontal, 28)
+                        .padding(.top, 4)
 
                         Button {
                             sessionEngine.dismissCompletionOverlay()
                             sessionEngine.shouldPresentTimerSheet = false
                             dismiss()
                         } label: {
-                            Text("Back to Focus")
-                                .font(.system(size: 14, weight: .bold, design: .rounded))
+                            Text("Close")
+                                .font(.system(size: 16, weight: .bold, design: .rounded))
                                 .foregroundStyle(Color.black)
-                                .padding(.horizontal, 24)
-                                .padding(.vertical, 12)
-                                .background(ringAccent, in: Capsule())
+                                .frame(width: 180, height: 48)
+                                .background(DailyOSTheme.emerald, in: Capsule())
                         }
                         .buttonStyle(MidnightPressButtonStyle())
-                        .padding(.top, 6)
+                        .padding(.top, 8)
+                    }
+                    .onAppear {
+                        celebrationBounceTrigger += 1
                     }
                     .transition(.scale(scale: 0.94).combined(with: .opacity))
 
                 case .none:
-                    // Iconic Glowing Ring (0% -> 100%) + Smart Elapsed-of-Total Time (`35m / 45m`)
-                    ZStack {
-                        OrganicBreathingAura(color: ringAccent, diameter: 318)
-                        AmbientBloomRing(
-                            progress: sessionEngine.hasLiveSession ? sessionEngine.elapsedProgressFraction : 0.0,
-                            color: ringAccent,
-                            lineWidth: 14,
-                            diameter: 266
-                        )
-
-                        VStack(spacing: 8) {
-                            Text(sessionEngine.sessionTitle.uppercased())
-                                .font(.system(size: 11, weight: .bold, design: .rounded))
-                                .tracking(1.6)
-                                .foregroundStyle(DailyOSTheme.eyebrow)
-                                .lineLimit(1)
-                                .frame(maxWidth: 185)
-
-                            Text(sessionEngine.formattedElapsedOfTotal)
-                                .font(.system(size: sessionEngine.formattedElapsedOfTotal.count > 11 ? 30 : 38, weight: .bold, design: .rounded))
-                                .monospacedDigit()
-                                .foregroundStyle(Color.white)
-                                .contentTransition(.numericText())
-                                .animation(.easeInOut(duration: 0.2), value: sessionEngine.formattedElapsedOfTotal)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.78)
-                                .frame(maxWidth: 215)
-
-                            // Glowing Active Deep Work vs Paused Badge
-                            if sessionEngine.hasLiveSession {
-                                HStack(spacing: 5) {
-                                    Circle()
-                                        .fill(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
-                                        .frame(width: 7, height: 7)
-                                    Text(sessionEngine.isTrackingDeepWork
-                                         ? "ACTIVE • \(sessionEngine.activeMinutesLoggedForSession)m logged"
-                                         : "PAUSED • \(sessionEngine.activeMinutesLoggedForSession)m logged")
-                                        .font(.system(size: 11, weight: .black, design: .rounded))
-                                        .monospacedDigit()
-                                        .foregroundStyle(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
-                                }
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 4)
-                                .background(
-                                    (sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")).opacity(0.16),
-                                    in: Capsule()
-                                )
-                            }
-
-                            TextField(
-                                "",
-                                text: $sessionEngine.editableCue,
-                                prompt: Text("phone in another room").foregroundStyle(Color.white.opacity(0.32))
+                    VStack(spacing: 18) {
+                        ZStack {
+                            OrganicBreathingAura(color: ringAccent, diameter: 318)
+                            AmbientBloomRing(
+                                progress: sessionEngine.hasLiveSession ? sessionEngine.elapsedProgressFraction : 0.0,
+                                color: ringAccent,
+                                lineWidth: 14,
+                                diameter: 268
                             )
-                            .font(.system(size: 13, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.68))
-                            .multilineTextAlignment(.center)
-                            .frame(maxWidth: 180)
-                        }
-                    }
-                }
 
-                // Helpful explanation for Scheduled Auto-Start Wall-Clock blocks while paused
-                if sessionEngine.completionOverlay == .none,
-                   sessionEngine.activeSession?.isScheduledWallClock == true,
-                   !sessionEngine.isTrackingDeepWork {
-                    Text("Scheduled block is ticking on wall clock — press Play to log Active Deep Work.")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(DailyOSTheme.eyebrow)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 32)
-                        .padding(.top, 16)
-                }
+                            VStack(spacing: 7) {
+                                // Never duplicate "DEEP WORK" directly above "Deep Work"
+                                if shouldShowDeepWorkEyebrow {
+                                    Text("DEEP WORK")
+                                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                                        .tracking(1.6)
+                                        .foregroundStyle(DailyOSTheme.eyebrow)
+                                }
 
-                // Quick Duration Presets (when no live session & no completion overlay)
-                if !sessionEngine.hasLiveSession && sessionEngine.completionOverlay == .none {
-                    HStack(spacing: 8) {
-                        ForEach(presets, id: \.self) { mins in
-                            let selected = sessionEngine.adHocDurationMinutes == mins
-                            Button {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                sessionEngine.adHocDurationMinutes = mins
-                            } label: {
-                                Text("\(mins)m")
-                                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                                Text(sessionEngine.sessionTitle)
+                                    .font(.system(size: 14, weight: .bold, design: .rounded))
+                                    .foregroundStyle(Color.white.opacity(0.86))
+                                    .lineLimit(1)
+                                    .frame(maxWidth: 185)
+
+                                Text(sessionEngine.formattedElapsedOfTotal)
+                                    .font(.system(size: sessionEngine.formattedElapsedOfTotal.count > 11 ? 30 : 38, weight: .bold, design: .rounded))
                                     .monospacedDigit()
-                                    .foregroundStyle(selected ? Color.black : Color.white.opacity(0.84))
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 9)
-                                    .background(selected ? DailyOSTheme.skyGlow : DailyOSTheme.buttonSurface, in: Capsule())
+                                    .foregroundStyle(Color.white)
+                                    .contentTransition(.numericText())
+                                    .animation(.easeInOut(duration: 0.2), value: sessionEngine.formattedElapsedOfTotal)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.78)
+                                    .frame(maxWidth: 215)
+
+                                // Clean Status Pill
+                                if sessionEngine.hasLiveSession {
+                                    HStack(spacing: 5) {
+                                        Circle()
+                                            .fill(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
+                                            .frame(width: 7, height: 7)
+                                        Text(sessionEngine.isTrackingDeepWork
+                                             ? "ACTIVE • \(sessionEngine.activeMinutesLoggedForSession)m logged"
+                                             : "PAUSED • \(sessionEngine.activeMinutesLoggedForSession)m logged")
+                                            .font(.system(size: 11, weight: .black, design: .rounded))
+                                            .monospacedDigit()
+                                            .foregroundStyle(sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020"))
+                                    }
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        (sessionEngine.isTrackingDeepWork ? DailyOSTheme.emerald : Color(hex: "#FFB020")).opacity(0.16),
+                                        in: Capsule()
+                                    )
+                                }
+
+                                TextField(
+                                    "",
+                                    text: $sessionEngine.editableCue,
+                                    prompt: Text("phone in another room").foregroundStyle(Color.white.opacity(0.32))
+                                )
+                                .font(.system(size: 13, weight: .medium, design: .rounded))
+                                .foregroundStyle(Color.white.opacity(0.68))
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 180)
                             }
-                            .buttonStyle(MidnightPressButtonStyle())
+                        }
+
+                        // Subtle Armed Photo Check-In Indicator (Automatic Only — No Manual Camera Button)
+                        if sessionEngine.hasLiveSession && sessionEngine.isPhotoProofArmedForCurrentSession {
+                            HStack(spacing: 6) {
+                                Image(systemName: "camera.fill")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text("Photo check-in armed")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            }
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(DailyOSTheme.inputSurface, in: Capsule())
+                            .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                        }
+
+                        // Quick Deep Work Setup Controls (When Idle: Duration Presets + 1-Tap Photo Proof Opt-In Pill)
+                        if !sessionEngine.hasLiveSession {
+                            VStack(spacing: 14) {
+                                HStack(spacing: 8) {
+                                    ForEach(presets, id: \.self) { mins in
+                                        let selected = sessionEngine.adHocDurationMinutes == mins
+                                        Button {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                            sessionEngine.adHocDurationMinutes = mins
+                                        } label: {
+                                            Text("\(mins)m")
+                                                .font(.system(size: 13, weight: .bold, design: .rounded))
+                                                .monospacedDigit()
+                                                .foregroundStyle(selected ? Color.black : Color.white.opacity(0.84))
+                                                .padding(.horizontal, 14)
+                                                .padding(.vertical, 9)
+                                                .background(selected ? DailyOSTheme.skyGlow : DailyOSTheme.buttonSurface, in: Capsule())
+                                        }
+                                        .buttonStyle(MidnightPressButtonStyle())
+                                    }
+                                }
+
+                                // 1-Tap Photo Proof Opt-In Pill Toggle (Arms 2-Min + Mid-Task Auto Checks)
+                                Button {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    withAnimation(ProMotionSpring.glide) {
+                                        sessionEngine.adHocRequiresPhotoProof.toggle()
+                                    }
+                                    if sessionEngine.adHocRequiresPhotoProof {
+                                        PhotoProofScheduler.shared.ensureNotificationAuthorization()
+                                    }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: sessionEngine.adHocRequiresPhotoProof ? "camera.fill" : "camera")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .symbolEffect(.bounce, value: sessionEngine.adHocRequiresPhotoProof)
+                                        Text(sessionEngine.adHocRequiresPhotoProof ? "Photo Proof: ON (2m + spot-checks)" : "Photo Proof: OFF")
+                                            .font(.system(size: 12.5, weight: .bold, design: .rounded))
+                                    }
+                                    .foregroundStyle(sessionEngine.adHocRequiresPhotoProof ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
+                                    .padding(.horizontal, 16)
+                                    .frame(height: 36)
+                                    .background(
+                                        sessionEngine.adHocRequiresPhotoProof ? DailyOSTheme.emerald.opacity(0.15) : DailyOSTheme.buttonSurface,
+                                        in: Capsule()
+                                    )
+                                    .overlay(
+                                        Capsule().stroke(
+                                            sessionEngine.adHocRequiresPhotoProof ? DailyOSTheme.emerald.opacity(0.55) : DailyOSTheme.buttonStroke,
+                                            lineWidth: 1
+                                        )
+                                    )
+                                }
+                                .buttonStyle(MidnightPressButtonStyle())
+                            }
+                        }
+
+                        if sessionEngine.activeSession?.isScheduledWallClock == true && !sessionEngine.isTrackingDeepWork {
+                            Text("Scheduled block is ticking on wall clock — tap Resume to log Active Deep Work.")
+                                .font(.system(size: 12, weight: .medium, design: .rounded))
+                                .foregroundStyle(DailyOSTheme.eyebrow)
+                                .multilineTextAlignment(.center)
+                                .padding(.horizontal, 32)
                         }
                     }
-                    .padding(.top, 26)
                 }
 
                 Spacer()
 
-                // Prominent 1-Tap Emerald "✓ Done" Pill Button + Play/Pause & Photo Proof Controls
+                // Clean Bottom Controls (Single Checkmark "Done" Pill + Symmetrical 2-Button Row: End & Pause/Resume)
                 if sessionEngine.completionOverlay == .none {
                     VStack(spacing: 18) {
                         if sessionEngine.hasLiveSession {
@@ -1910,31 +1736,50 @@ struct FocusActiveTimerSheet: View {
                             } label: {
                                 HStack(spacing: 8) {
                                     Image(systemName: "checkmark")
-                                        .font(.system(size: 14, weight: .black))
-                                    Text("✓ Done")
-                                        .font(.system(size: 16, weight: .black, design: .rounded))
+                                        .font(.system(size: 16, weight: .bold))
+                                    Text("Done")
+                                        .font(.system(size: 17, weight: .bold, design: .rounded))
                                 }
                                 .foregroundStyle(Color.black)
-                                .padding(.horizontal, 34)
-                                .padding(.vertical, 13)
+                                .frame(width: 210, height: 52)
                                 .background(DailyOSTheme.emerald, in: Capsule())
-                                .shadow(color: DailyOSTheme.emerald.opacity(0.38), radius: 12)
+                                .shadow(color: DailyOSTheme.emerald.opacity(0.38), radius: 14)
                             }
                             .buttonStyle(MidnightPressButtonStyle())
-                        }
 
-                        HStack(spacing: 28) {
-                            VStack(spacing: 8) {
-                                FrostedCircleButton(icon: "xmark", size: 54, tint: DailyOSTheme.eyebrow) {
-                                    sessionEngine.endCurrentSession(markDismissedIfScheduled: true)
-                                    sessionEngine.shouldPresentTimerSheet = false
-                                    dismiss()
+                            HStack(spacing: 44) {
+                                VStack(spacing: 8) {
+                                    FrostedCircleButton(icon: "xmark", size: 58, tint: DailyOSTheme.eyebrow) {
+                                        sessionEngine.endCurrentSession(markDismissedIfScheduled: true)
+                                        sessionEngine.shouldPresentTimerSheet = false
+                                        dismiss()
+                                    }
+                                    Text("End")
+                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(DailyOSTheme.eyebrow)
                                 }
-                                Text("End")
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(DailyOSTheme.eyebrow)
-                            }
 
+                                VStack(spacing: 8) {
+                                    Button {
+                                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                        withAnimation(ProMotionSpring.pop) {
+                                            sessionEngine.togglePlayPause()
+                                        }
+                                    } label: {
+                                        Image(systemName: sessionEngine.isTrackingDeepWork ? "pause.fill" : "play.fill")
+                                            .font(.system(size: 20, weight: .bold))
+                                            .foregroundStyle(Color.black)
+                                            .frame(width: 58, height: 58)
+                                            .background(ringAccent, in: Circle())
+                                            .shadow(color: ringAccent.opacity(0.42), radius: 14)
+                                    }
+                                    .buttonStyle(MidnightPressButtonStyle())
+                                    Text(sessionEngine.isTrackingDeepWork ? "Pause" : "Resume")
+                                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.84))
+                                }
+                            }
+                        } else {
                             VStack(spacing: 8) {
                                 Button {
                                     UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -1942,46 +1787,21 @@ struct FocusActiveTimerSheet: View {
                                         sessionEngine.togglePlayPause()
                                     }
                                 } label: {
-                                    Image(systemName: sessionEngine.isTrackingDeepWork ? "pause.fill" : "play.fill")
-                                        .font(.system(size: 22, weight: .bold))
+                                    Image(systemName: "play.fill")
+                                        .font(.system(size: 24, weight: .bold))
                                         .foregroundStyle(Color.black)
-                                        .frame(width: 68, height: 68)
-                                        .background(ringAccent, in: Circle())
-                                        .shadow(color: ringAccent.opacity(0.40), radius: 14)
+                                        .frame(width: 72, height: 72)
+                                        .background(DailyOSTheme.skyGlow, in: Circle())
+                                        .shadow(color: DailyOSTheme.skyGlow.opacity(0.42), radius: 16)
                                 }
                                 .buttonStyle(MidnightPressButtonStyle())
-                                Text(sessionEngine.isTrackingDeepWork ? "Pause" : (sessionEngine.hasLiveSession ? "Resume" : "Start"))
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                Text("Start")
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
                                     .foregroundStyle(Color.white.opacity(0.84))
-                            }
-
-                            VStack(spacing: 8) {
-                                FrostedCircleButton(icon: "camera.fill", size: 54, tint: DailyOSTheme.solarAccent) {
-                                    let title = sessionEngine.sessionTitle
-                                    let cue = sessionEngine.editableCue
-                                    sessionEngine.shouldPresentTimerSheet = false
-                                    dismiss()
-                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                                        if let active = focusManager.activeFocusBlock {
-                                            focusManager.openVoluntaryProofCapture(for: active)
-                                        } else {
-                                            focusManager.activateFocusTaskAlarm(
-                                                taskID: "deep_work_proof_\(Int(Date().timeIntervalSince1970))",
-                                                taskTitle: title,
-                                                taskNotes: cue.isEmpty ? "Deep work photo proof" : cue,
-                                                taskSource: "Deep Work",
-                                                evasionPenalty: false
-                                            )
-                                        }
-                                    }
-                                }
-                                Text("Proof")
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(DailyOSTheme.eyebrow)
                             }
                         }
                     }
-                    .padding(.bottom, 36)
+                    .padding(.bottom, 38)
                 }
             }
         }
@@ -2155,7 +1975,7 @@ struct FocusTaskAlarmFullScreenView: View {
                         .font(.headline.weight(.bold))
                         .foregroundStyle(Color.white)
                         .multilineTextAlignment(.center)
-                    Text("Live camera only — photo library disabled. Gemini 2.5 Flash verifies your task.")
+                    Text("Live camera only — photo library disabled. Gemini verifies your task.")
                         .font(.caption)
                         .foregroundStyle(DailyOSTheme.eyebrow)
                         .multilineTextAlignment(.center)

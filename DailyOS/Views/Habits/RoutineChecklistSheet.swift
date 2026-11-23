@@ -2,26 +2,6 @@ import SwiftUI
 import SwiftData
 import UIKit
 
-/// Lightweight local persistence for the Night Routine "Phone on charger away from bed" Dock Proof badge (zero API calls).
-enum NightDockProofStore {
-    private static let key = "com.patrik.dailyos.nightDockProofDayKeys"
-
-    static func isDocked(dayKey: String) -> Bool {
-        let map = UserDefaults.standard.dictionary(forKey: key) as? [String: Bool] ?? [:]
-        return map[dayKey] ?? false
-    }
-
-    static func markDocked(dayKey: String) {
-        var map = UserDefaults.standard.dictionary(forKey: key) as? [String: Bool] ?? [:]
-        map[dayKey] = true
-        UserDefaults.standard.set(map, forKey: key)
-    }
-
-    static func clearAll() {
-        UserDefaults.standard.removeObject(forKey: key)
-    }
-}
-
 /// Sleek Midnight Obsidian Morning (Sun) & Night (Moon) Routine Checklist Sheet.
 struct RoutineChecklistSheet: View {
     @Environment(\.dismiss) private var dismiss
@@ -44,8 +24,6 @@ struct RoutineChecklistSheet: View {
     @State private var editingItem: RoutineChecklistItem?
     @State private var editTitleDraft: String = ""
     @State private var editMode: EditMode = .inactive
-    @State private var dockProofItem: RoutineChecklistItem? = nil
-    @State private var dockProofRevision: Int = 0
     @State private var burstTriggerByItem: [UUID: Int] = [:]
     @State private var shimmerTrigger: Int = 0
 
@@ -128,6 +106,7 @@ struct RoutineChecklistSheet: View {
                                 .overlay(Circle().stroke(accent.opacity(0.45), lineWidth: 1.5))
                             Image(systemName: routineType.iconName)
                                 .font(.system(size: 18, weight: .semibold))
+                                .symbolEffect(.bounce.up, value: completedCount)
                                 .foregroundStyle(accent)
                         }
 
@@ -138,6 +117,7 @@ struct RoutineChecklistSheet: View {
                             Text("\(completedCount) / \(items.count) done")
                                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
                                 .foregroundStyle(completedCount == items.count && !items.isEmpty ? accent : DailyOSTheme.eyebrow)
                         }
                     }
@@ -150,14 +130,14 @@ struct RoutineChecklistSheet: View {
                             size: 36,
                             tint: editMode == .active ? accent : Color.white
                         ) {
-                            withAnimation(.spring(response: 0.25)) {
+                            withAnimation(ProMotionSpring.glide) {
                                 editMode = (editMode == .active) ? .inactive : .active
                             }
                         }
                     }
 
                     FrostedCircleButton(icon: "plus", size: 36, tint: accent) {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                        withAnimation(ProMotionSpring.glide) {
                             showingQuickAddField.toggle()
                         }
                     }
@@ -214,7 +194,7 @@ struct RoutineChecklistSheet: View {
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
-                // Checklist Rows (Native Swipe-to-Delete + Drag-to-Reorder + Tap-to-Edit)
+                // Checklist Rows (Clean 1-Tap Check-Off, Swipe-to-Delete, Drag-to-Reorder & Tap-to-Edit)
                 if items.isEmpty {
                     VStack(spacing: 10) {
                         Image(systemName: routineType.iconName)
@@ -280,16 +260,6 @@ struct RoutineChecklistSheet: View {
         .onChange(of: completedCount) { oldVal, newVal in
             if !items.isEmpty && newVal == items.count && oldVal < newVal {
                 shimmerTrigger += 1
-            }
-        }
-        .fullScreenCover(item: $dockProofItem) { item in
-            NightPhoneDockProofSheet(stepTitle: item.title) {
-                NightDockProofStore.markDocked(dayKey: todayKey)
-                dockProofRevision += 1
-                if !completedIDsToday.contains(item.id) {
-                    _ = SharedModelContainer.shared.toggleRoutineLog(itemID: item.id, dayKey: todayKey)
-                    burstTriggerByItem[item.id] = (burstTriggerByItem[item.id] ?? 0) + 1
-                }
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
             }
         }
@@ -313,18 +283,9 @@ struct RoutineChecklistSheet: View {
         }
     }
 
-    // MARK: - Interactive Checklist Row (with Quick Local Dock Proof for Night Charger Step)
-
-    private func isNightChargerStep(_ item: RoutineChecklistItem) -> Bool {
-        guard routineType == .night else { return false }
-        let low = item.title.lowercased()
-        return low.contains("charger") || low.contains("phone")
-    }
+    // MARK: - Clean 1-Tap Interactive Checklist Row
 
     private func routineRow(item: RoutineChecklistItem, isDone: Bool) -> some View {
-        let _ = dockProofRevision
-        let supportsDockProof = isNightChargerStep(item)
-        let isDockedToday = supportsDockProof && NightDockProofStore.isDocked(dayKey: todayKey)
         let burstCount = burstTriggerByItem[item.id] ?? 0
 
         return HStack(spacing: 14) {
@@ -332,13 +293,13 @@ struct RoutineChecklistSheet: View {
                 let completed = SharedModelContainer.shared.toggleRoutineLog(itemID: item.id, dayKey: todayKey)
                 if completed {
                     burstTriggerByItem[item.id] = burstCount + 1
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 } else {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 }
             } label: {
                 ZStack {
-                    CompletionBurstView(trigger: burstCount, color: accent, size: 46)
+                    CheckInBurstEffect(trigger: burstCount, color: accent)
                     Circle()
                         .fill(isDone ? accent : Color.clear)
                         .frame(width: 26, height: 26)
@@ -346,10 +307,13 @@ struct RoutineChecklistSheet: View {
                             Circle()
                                 .stroke(isDone ? accent : Color.white.opacity(0.28), lineWidth: 2)
                         )
+                        .scaleEffect(isDone ? 1.0 : 0.96)
+                        .animation(ProMotionSpring.checkPop, value: isDone)
                     if isDone {
                         Image(systemName: "checkmark")
                             .font(.system(size: 12, weight: .black))
                             .foregroundStyle(DailyOSTheme.canvas)
+                            .transition(.scale(scale: 0.4).combined(with: .opacity))
                     }
                 }
             }
@@ -359,53 +323,14 @@ struct RoutineChecklistSheet: View {
                 editTitleDraft = item.title
                 editingItem = item
             } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title)
-                        .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .strikethrough(isDone, color: DailyOSTheme.eyebrow)
-                        .foregroundStyle(isDone ? DailyOSTheme.eyebrow : Color.white)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                    if isDockedToday {
-                        Text("Docked ✓")
-                            .font(.system(size: 10, weight: .black, design: .rounded))
-                            .foregroundStyle(DailyOSTheme.emerald)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
-                            .background(DailyOSTheme.emerald.opacity(0.16), in: Capsule())
-                    }
-                }
-                .contentShape(Rectangle())
+                Text(item.title)
+                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .strikethrough(isDone, color: DailyOSTheme.eyebrow)
+                    .foregroundStyle(isDone ? DailyOSTheme.eyebrow : Color.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-
-            if supportsDockProof {
-                Button {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    dockProofItem = item
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: isDockedToday ? "checkmark.seal.fill" : "camera.fill")
-                            .font(.system(size: 11, weight: .bold))
-                        Text(isDockedToday ? "Docked" : "Snap")
-                            .font(.system(size: 11, weight: .bold, design: .rounded))
-                    }
-                    .foregroundStyle(isDockedToday ? DailyOSTheme.emerald : accent)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(
-                        (isDockedToday ? DailyOSTheme.emerald : accent).opacity(0.16),
-                        in: Capsule()
-                    )
-                    .overlay(
-                        Capsule().stroke(
-                            (isDockedToday ? DailyOSTheme.emerald : accent).opacity(0.45),
-                            lineWidth: 1
-                        )
-                    )
-                }
-                .buttonStyle(MidnightPressButtonStyle())
-            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
@@ -443,149 +368,5 @@ struct RoutineChecklistSheet: View {
         try? modelContext.save()
         SharedModelContainer.shared.save()
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-    }
-}
-
-// MARK: - Lightweight Local 2-Second Phone Dock Proof Camera Sheet (Zero API Cost)
-
-private struct NightPhoneDockProofSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @StateObject private var cameraVM = LivePhotoCaptureViewModel()
-
-    let stepTitle: String
-    let onConfirmed: () -> Void
-
-    var body: some View {
-        ZStack {
-            DailyOSTheme.canvas.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                HStack {
-                    FrostedCircleButton(icon: "xmark", size: 38) {
-                        cameraVM.stopSession()
-                        dismiss()
-                    }
-                    Spacer()
-                    Text("Night Dock Proof")
-                        .font(.system(size: 16, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                    Spacer()
-                    Color.clear.frame(width: 38, height: 38)
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 14)
-
-                VStack(spacing: 4) {
-                    Text(stepTitle)
-                        .font(.system(size: 17, weight: .bold, design: .rounded))
-                        .foregroundStyle(Color.white)
-                        .multilineTextAlignment(.center)
-                    Text("Snap your charger spot away from bed — instant local check-off (no AI wait).")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(DailyOSTheme.eyebrow)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(.horizontal, 22)
-
-                ZStack {
-                    if let captured = cameraVM.capturedImage {
-                        Image(uiImage: captured)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: 400)
-                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .stroke(DailyOSTheme.emerald, lineWidth: 2)
-                            )
-                    } else {
-                        CameraPreviewView(session: cameraVM.captureSession)
-                            .frame(maxWidth: .infinity, maxHeight: 400)
-                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .stroke(DailyOSTheme.indigoGlow.opacity(0.65), lineWidth: 2)
-                            )
-                    }
-                }
-                .padding(.horizontal, 18)
-
-                Spacer(minLength: 0)
-
-                if cameraVM.capturedImage != nil {
-                    HStack(spacing: 12) {
-                        Button {
-                            cameraVM.retakePhoto()
-                        } label: {
-                            Label("Retake", systemImage: "arrow.counterclockwise")
-                                .font(.system(size: 15, weight: .bold, design: .rounded))
-                                .foregroundStyle(Color.white)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 15)
-                                .background(DailyOSTheme.buttonSurface, in: Capsule())
-                        }
-                        .buttonStyle(MidnightPressButtonStyle())
-
-                        Button {
-                            cameraVM.stopSession()
-                            onConfirmed()
-                            dismiss()
-                        } label: {
-                            Label("Confirm Docked ✓", systemImage: "checkmark.seal.fill")
-                                .font(.system(size: 15, weight: .black, design: .rounded))
-                                .foregroundStyle(Color.black)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 15)
-                                .background(DailyOSTheme.emerald, in: Capsule())
-                        }
-                        .buttonStyle(MidnightPressButtonStyle())
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.bottom, 24)
-                } else {
-                    HStack(spacing: 36) {
-                        Color.clear.frame(width: 48, height: 48)
-
-                        Button {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            cameraVM.takeLivePhoto()
-                        } label: {
-                            ZStack {
-                                Circle()
-                                    .stroke(Color.white, lineWidth: 4)
-                                    .frame(width: 74, height: 74)
-                                Circle()
-                                    .fill(DailyOSTheme.indigoGlow)
-                                    .frame(width: 60, height: 60)
-                                Image(systemName: "camera.fill")
-                                    .font(.title2)
-                                    .foregroundStyle(Color.white)
-                            }
-                        }
-                        .buttonStyle(MidnightPressButtonStyle())
-                        .disabled(cameraVM.isCapturing)
-
-                        Button {
-                            cameraVM.switchCamera()
-                        } label: {
-                            Image(systemName: "arrow.triangle.2.circlepath.camera")
-                                .font(.title3)
-                                .foregroundStyle(Color.white)
-                                .frame(width: 48, height: 48)
-                                .background(DailyOSTheme.buttonSurface, in: Circle())
-                        }
-                        .buttonStyle(MidnightPressButtonStyle())
-                    }
-                    .padding(.bottom, 24)
-                }
-            }
-        }
-        .preferredColorScheme(.dark)
-        .onAppear {
-            cameraVM.checkPermissionAndStart()
-        }
-        .onDisappear {
-            cameraVM.stopSession()
-        }
     }
 }

@@ -381,7 +381,7 @@ struct HabitsListView: View {
                         }
                     }
                     .padding(.horizontal, 18)
-                    .padding(.bottom, 28)
+                    .padding(.bottom, 120)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -557,7 +557,6 @@ struct HabitsListView: View {
             VStack(spacing: 8) {
                 ForEach(remainingItems.prefix(4)) { item in
                     let burst = routineBurstTrigger[item.id] ?? 0
-                    let isChargerStep = type == .night && (item.title.lowercased().contains("charger") || item.title.lowercased().contains("phone"))
 
                     HStack(spacing: 11) {
                         Button {
@@ -567,18 +566,21 @@ struct HabitsListView: View {
                                 let newCounts = routineCounts(for: type)
                                 if newCounts.completed >= newCounts.total {
                                     spotlightShimmerTrigger += 1
+                                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                } else {
+                                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                                 }
-                                UINotificationFeedbackGenerator().notificationOccurred(.success)
                             } else {
                                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
                             }
                         } label: {
                             ZStack {
-                                CompletionBurstView(trigger: burst, color: accent, size: 42)
+                                CheckInBurstEffect(trigger: burst, color: accent)
                                 Circle()
                                     .stroke(accent.opacity(0.75), lineWidth: 2)
                                     .frame(width: 24, height: 24)
                             }
+                            .checkPopBounce(trigger: burst)
                         }
                         .buttonStyle(MidnightPressButtonStyle())
 
@@ -588,21 +590,6 @@ struct HabitsListView: View {
                             .lineLimit(1)
 
                         Spacer(minLength: 4)
-
-                        if isChargerStep {
-                            Button {
-                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                activeRoutineSheet = .night
-                            } label: {
-                                Label("Dock", systemImage: "camera.fill")
-                                    .font(.system(size: 10, weight: .bold, design: .rounded))
-                                    .foregroundStyle(accent)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(accent.opacity(0.16), in: Capsule())
-                            }
-                            .buttonStyle(MidnightPressButtonStyle())
-                        }
                     }
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)
@@ -1030,9 +1017,9 @@ private struct HabitFeedCardView: View {
 
                 Spacer(minLength: 8)
 
-                // Interactive One-Tap Check-In Control
+                // Interactive One-Tap Check-In Control with Visible Burst & Pop Bounce
                 ZStack {
-                    ParticleBurstOverlay(accent: accent, trigger: burstTrigger)
+                    CheckInBurstEffect(trigger: burstTrigger, color: accent)
 
                     if habit.trackingMode == .quantity {
                         // Quantity Habit: Circular mini progress ring with integer inside
@@ -1045,14 +1032,16 @@ private struct HabitFeedCardView: View {
                                 .stroke(accent, style: StrokeStyle(lineWidth: 3.5, lineCap: .round))
                                 .rotationEffect(.degrees(-90))
                                 .frame(width: 36, height: 36)
-                                .animation(.spring(response: 0.3), value: todayRatio)
+                                .animation(ProMotionSpring.ringFill, value: todayRatio)
 
                             Text("\(Int(todayValue))")
                                 .font(.system(size: 13, weight: .bold, design: .rounded))
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
                                 .foregroundStyle(isCompleteToday ? accent : Color.white)
                         }
                         .frame(width: 40, height: 40)
+                        .checkPopBounce(trigger: burstTrigger)
                         .contentShape(Circle())
                         .onTapGesture {
                             burstTrigger += 1
@@ -1079,10 +1068,11 @@ private struct HabitFeedCardView: View {
                                     .font(.system(size: 15, weight: .bold))
                                     .foregroundStyle(isCompleteToday ? DailyOSTheme.canvas : accent)
                             }
+                            .checkPopBounce(trigger: burstTrigger)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(MidnightPressButtonStyle())
                     } else {
-                        // Binary Build Habit: Circular check button with radial burst
+                        // Binary Build Habit: Circular check button with visible pop & radial burst
                         Button {
                             if !isCompleteToday {
                                 burstTrigger += 1
@@ -1102,8 +1092,9 @@ private struct HabitFeedCardView: View {
                                     .font(.system(size: 15, weight: .black))
                                     .foregroundStyle(isCompleteToday ? DailyOSTheme.canvas : Color.white.opacity(0.35))
                             }
+                            .checkPopBounce(trigger: burstTrigger)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(MidnightPressButtonStyle())
                     }
                 }
             }
