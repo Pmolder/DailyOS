@@ -80,6 +80,14 @@ jobs:
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCalendarsFullAccessUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSPhotoLibraryAddUsageDescription"
 
+          echo "=== Verifying Compiled App Icon Asset Catalog (Assets.car / AppIcon) ==="
+          if [ ! -f "Payload/DailyOS.app/Assets.car" ] && ! ls Payload/DailyOS.app/AppIcon*.png 1> /dev/null 2>&1; then
+            echo "ERROR: Missing compiled AppIcon (Assets.car or AppIcon*.png) in Payload/DailyOS.app"
+            exit 1
+          fi
+          ls -lh Payload/DailyOS.app/Assets.car Payload/DailyOS.app/AppIcon*.png 2>/dev/null || true
+          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleIconName|CFBundleIcons" || true
+
           echo "=== Verifying Embedded DailyOSWidgets.appex & Matching Versions ==="
           WIDGET_APPEX="Payload/DailyOS.app/PlugIns/DailyOSWidgets.appex"
           if [ ! -d "${WIDGET_APPEX}" ]; then
