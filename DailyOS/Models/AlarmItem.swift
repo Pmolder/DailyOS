@@ -262,8 +262,28 @@ final class AlarmItem {
     var qrGraceSeconds: Int = 60
     var brainGameModeRaw: String = BrainGameMode.random.rawValue
     var reflexThresholdMs: Int = 260
+    var sleepCycleCount: Int = 5
+    var windDownMinutes: Int = 15
+    var bedtimeReminderEnabled: Bool = true
+    var stage3Enabled: Bool = true
+    var stage3TimeLimitSeconds: Int = 120
+    var stage3ChecklistItemsData: String = AlarmItem.defaultStage3ChecklistJSON
     var createdAt: Date
     var lastTriggeredMinuteKey: String
+
+    static let defaultStage3ChecklistItems: [String] = [
+        "Drink a full glass of water",
+        "Look at bright light for 30 seconds",
+        "Splash face with cold water"
+    ]
+
+    static var defaultStage3ChecklistJSON: String {
+        guard let data = try? JSONEncoder().encode(defaultStage3ChecklistItems),
+              let str = String(data: data, encoding: .utf8) else {
+            return "[]"
+        }
+        return str
+    }
 
     init(
         id: UUID = UUID(),
@@ -281,6 +301,12 @@ final class AlarmItem {
         qrGraceSeconds: Int = 60,
         brainGameMode: BrainGameMode = .random,
         reflexThresholdMs: Int = WakeQRStorage.defaultReflexThresholdMs,
+        sleepCycleCount: Int = 5,
+        windDownMinutes: Int = 15,
+        bedtimeReminderEnabled: Bool = true,
+        stage3Enabled: Bool = true,
+        stage3TimeLimitSeconds: Int = 120,
+        stage3ChecklistItems: [String] = AlarmItem.defaultStage3ChecklistItems,
         createdAt: Date = Date(),
         lastTriggeredMinuteKey: String = ""
     ) {
@@ -299,6 +325,17 @@ final class AlarmItem {
         self.qrGraceSeconds = max(20, min(180, qrGraceSeconds))
         self.brainGameModeRaw = brainGameMode.rawValue
         self.reflexThresholdMs = max(180, min(350, reflexThresholdMs))
+        self.sleepCycleCount = max(4, min(6, sleepCycleCount))
+        self.windDownMinutes = max(5, min(60, windDownMinutes))
+        self.bedtimeReminderEnabled = bedtimeReminderEnabled
+        self.stage3Enabled = stage3Enabled
+        self.stage3TimeLimitSeconds = max(60, min(300, stage3TimeLimitSeconds))
+        if let data = try? JSONEncoder().encode(stage3ChecklistItems),
+           let jsonStr = String(data: data, encoding: .utf8) {
+            self.stage3ChecklistItemsData = jsonStr
+        } else {
+            self.stage3ChecklistItemsData = AlarmItem.defaultStage3ChecklistJSON
+        }
         self.createdAt = createdAt
         self.lastTriggeredMinuteKey = lastTriggeredMinuteKey
     }
@@ -342,6 +379,73 @@ final class AlarmItem {
     var brainGameMode: BrainGameMode {
         get { BrainGameMode(rawValue: brainGameModeRaw) ?? .random }
         set { brainGameModeRaw = newValue.rawValue }
+    }
+
+    var stage3ChecklistItems: [String] {
+        get {
+            guard let data = stage3ChecklistItemsData.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([String].self, from: data) else {
+                return Self.defaultStage3ChecklistItems
+            }
+            let cleaned = decoded.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            return cleaned.isEmpty ? Self.defaultStage3ChecklistItems : cleaned
+        }
+        set {
+            let cleaned = Array(newValue.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }.prefix(5))
+            if let data = try? JSONEncoder().encode(cleaned),
+               let str = String(data: data, encoding: .utf8) {
+                stage3ChecklistItemsData = str
+            }
+        }
+    }
+
+    var sleepDurationHoursText: String {
+        Self.sleepDurationText(forCycles: sleepCycleCount)
+    }
+
+    static func sleepDurationText(forCycles cycles: Int) -> String {
+        let totalMins = max(1, cycles) * 90
+        let hours = totalMins / 60
+        let rem = totalMins % 60
+        return rem == 0 ? "\(hours)h" : "\(hours).5h"
+    }
+
+    static func computeBedtime(
+        wakeHour: Int,
+        wakeMinute: Int,
+        cycles: Int,
+        windDownMinutes: Int
+    ) -> (windDownHour: Int, windDownMinute: Int, lightsOutHour: Int, lightsOutMinute: Int, windDownText: String, lightsOutText: String, fallsOnPreviousDay: Bool) {
+        let wakeTotal = wakeHour * 60 + wakeMinute
+        let lightsOutRaw = wakeTotal - (max(1, cycles) * 90)
+        let windDownRaw = lightsOutRaw - max(0, windDownMinutes)
+
+        let lightsOutWrapped = ((lightsOutRaw % 1440) + 1440) % 1440
+        let windDownWrapped = ((windDownRaw % 1440) + 1440) % 1440
+
+        let loH = lightsOutWrapped / 60
+        let loM = lightsOutWrapped % 60
+        let wdH = windDownWrapped / 60
+        let wdM = windDownWrapped % 60
+
+        return (
+            windDownHour: wdH,
+            windDownMinute: wdM,
+            lightsOutHour: loH,
+            lightsOutMinute: loM,
+            windDownText: String(format: "%02d:%02d", wdH, wdM),
+            lightsOutText: String(format: "%02d:%02d", loH, loM),
+            fallsOnPreviousDay: windDownRaw < 0
+        )
+    }
+
+    func bedtimeSchedule() -> (windDownHour: Int, windDownMinute: Int, lightsOutHour: Int, lightsOutMinute: Int, windDownText: String, lightsOutText: String, fallsOnPreviousDay: Bool) {
+        Self.computeBedtime(
+            wakeHour: hour,
+            wakeMinute: minute,
+            cycles: sleepCycleCount,
+            windDownMinutes: windDownMinutes
+        )
     }
 
     var displayLabel: String {

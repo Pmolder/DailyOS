@@ -28,8 +28,35 @@ struct AlarmEditorView: View {
     @State private var selectedBrainGame: BrainGameMode = .random
     @State private var reflexThresholdMs: Int = WakeQRStorage.defaultReflexThresholdMs
 
+    // Sleep-Cycle Bedtime Planner
+    @State private var sleepCycleCount: Int = 5
+    @State private var windDownMinutes: Int = 15
+    @State private var bedtimeReminderEnabled: Bool = true
+    @Namespace private var sleepCycleNamespace
+
+    // Stage-3 Morning Activation Checklist
+    @State private var stage3Enabled: Bool = true
+    @State private var stage3TimeLimitSeconds: Int = 120
+    @State private var stage3ChecklistItems: [String] = AlarmItem.defaultStage3ChecklistItems
+    @State private var newStage3StepText: String = ""
+
     private let stepPresets: [Int] = [200, 500, 1000, 2000]
     private let timeLimitMinutePresets: [Int] = [2, 5, 10, 15, 20]
+    private let windDownPresets: [Int] = [10, 15, 20, 30]
+    private let stage3LimitPresets: [(label: String, seconds: Int)] = [
+        ("1m", 60), ("2m", 120), ("3m", 180), ("5m", 300)
+    ]
+
+    private var liveBedtimePreview: (windDownText: String, lightsOutText: String) {
+        let comps = ISOWeekCalendar.current.dateComponents([.hour, .minute], from: selectedTime)
+        let bed = AlarmItem.computeBedtime(
+            wakeHour: comps.hour ?? 7,
+            wakeMinute: comps.minute ?? 0,
+            cycles: sleepCycleCount,
+            windDownMinutes: windDownMinutes
+        )
+        return (bed.windDownText, bed.lightsOutText)
+    }
 
     private var totalStepsLimitSeconds: Int {
         max(30, min(3600, (stepsLimitMinutes * 60) + stepsLimitExtraSeconds))
@@ -74,6 +101,109 @@ struct AlarmEditorView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 4)
                             .ambientCard(accent: DailyOSTheme.indigoGlow, cornerRadius: 22, washOpacity: 0.08)
+                        }
+
+                        // 1b. SLEEP CYCLES & BEDTIME PLANNER
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("SLEEP CYCLES & BEDTIME")
+                                .eyebrowStyle()
+
+                            VStack(alignment: .leading, spacing: 14) {
+                                // Live Reverse-Engineered Bedtime Display
+                                HStack(spacing: 12) {
+                                    Image(systemName: "moon.stars.fill")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundStyle(DailyOSTheme.indigoGlow)
+                                        .frame(width: 40, height: 40)
+                                        .background(DailyOSTheme.indigoGlow.opacity(0.16), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("OPTIMAL BEDTIME TARGET")
+                                            .eyebrowStyle()
+                                        HStack(spacing: 6) {
+                                            Text("Wind-Down \(liveBedtimePreview.windDownText)")
+                                                .contentTransition(.numericText())
+                                            Text("•")
+                                                .foregroundStyle(DailyOSTheme.eyebrow)
+                                            Text("Lights Out \(liveBedtimePreview.lightsOutText)")
+                                                .contentTransition(.numericText())
+                                        }
+                                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.white)
+                                        .animation(ProMotionSpring.glide, value: liveBedtimePreview.windDownText)
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+
+                                // 4 / 5 / 6 Sleep Cycles Matched-Geometry Selector
+                                HStack(spacing: 4) {
+                                    ForEach([4, 5, 6], id: \.self) { count in
+                                        let active = sleepCycleCount == count
+                                        Button {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                            withAnimation(ProMotionSpring.glide) {
+                                                sleepCycleCount = count
+                                            }
+                                        } label: {
+                                            VStack(spacing: 1) {
+                                                Text("\(count) cycles")
+                                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                Text(AlarmItem.sleepDurationText(forCycles: count))
+                                                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                                                    .monospacedDigit()
+                                            }
+                                            .foregroundStyle(active ? Color.black : Color.white.opacity(0.8))
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 9)
+                                            .background {
+                                                if active {
+                                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                                        .fill(DailyOSTheme.indigoGlow)
+                                                        .matchedGeometryEffect(id: "sleepCyclePill", in: sleepCycleNamespace)
+                                                }
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                                .padding(4)
+                                .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 13, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 13, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+
+                                // Wind-Down Fall-Asleep Buffer Chips
+                                HStack(spacing: 8) {
+                                    Text("Wind-Down")
+                                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                        .foregroundStyle(Color.white.opacity(0.85))
+                                    Spacer()
+                                    ForEach(windDownPresets, id: \.self) { mins in
+                                        let selected = windDownMinutes == mins
+                                        Button {
+                                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                            windDownMinutes = mins
+                                        } label: {
+                                            Text("\(mins)m")
+                                                .font(.system(size: 11, weight: .bold, design: .rounded))
+                                                .monospacedDigit()
+                                                .foregroundStyle(selected ? Color.black : Color.white.opacity(0.8))
+                                                .padding(.horizontal, 10)
+                                                .padding(.vertical, 6)
+                                                .background(selected ? DailyOSTheme.skyGlow : DailyOSTheme.inputSurface, in: Capsule())
+                                        }
+                                        .buttonStyle(MidnightPressButtonStyle())
+                                    }
+                                }
+
+                                Divider().overlay(DailyOSTheme.hairline)
+
+                                Toggle("Bedtime Lock-In Reminder", isOn: $bedtimeReminderEnabled)
+                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(Color.white)
+                                    .tint(DailyOSTheme.indigoGlow)
+                            }
+                            .padding(16)
+                            .ambientCard(accent: DailyOSTheme.indigoGlow, cornerRadius: 20, washOpacity: 0.08)
                         }
 
                         // 2. LABEL & SCHEDULE
@@ -456,6 +586,131 @@ struct AlarmEditorView: View {
                             .ambientCard(cornerRadius: 20)
                         }
 
+                        // 6. STAGE 3 • MORNING ACTIVATION CHECKLIST
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("STAGE 3 • MORNING ACTIVATION")
+                                .eyebrowStyle()
+
+                            VStack(alignment: .leading, spacing: 14) {
+                                Toggle(isOn: $stage3Enabled) {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text("Anti-Grogginess Wake Checklist")
+                                            .font(.system(size: 15, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(Color.white)
+                                        Text("Runs right after Stage 2 before alarm permanently dismisses")
+                                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                                            .foregroundStyle(DailyOSTheme.eyebrow)
+                                    }
+                                }
+                                .tint(DailyOSTheme.emerald)
+
+                                if stage3Enabled {
+                                    Divider().overlay(DailyOSTheme.hairline)
+
+                                    // Time-limit preset pills
+                                    HStack(spacing: 8) {
+                                        Text("Countdown")
+                                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                                            .foregroundStyle(Color.white.opacity(0.85))
+                                        Spacer()
+                                        ForEach(stage3LimitPresets, id: \.seconds) { preset in
+                                            let active = stage3TimeLimitSeconds == preset.seconds
+                                            Button {
+                                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                                stage3TimeLimitSeconds = preset.seconds
+                                            } label: {
+                                                Text(preset.label)
+                                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                    .monospacedDigit()
+                                                    .foregroundStyle(active ? Color.black : Color.white.opacity(0.8))
+                                                    .padding(.horizontal, 11)
+                                                    .padding(.vertical, 6)
+                                                    .background(active ? DailyOSTheme.emerald : DailyOSTheme.inputSurface, in: Capsule())
+                                            }
+                                            .buttonStyle(MidnightPressButtonStyle())
+                                        }
+                                    }
+
+                                    // Editable checklist steps (up to 5 items)
+                                    VStack(spacing: 8) {
+                                        ForEach(stage3ChecklistItems.indices, id: \.self) { idx in
+                                            HStack(spacing: 8) {
+                                                Text("\(idx + 1).")
+                                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                                    .monospacedDigit()
+                                                    .foregroundStyle(DailyOSTheme.emerald)
+                                                    .frame(width: 18)
+
+                                                TextField(
+                                                    "Wake step",
+                                                    text: Binding(
+                                                        get: { stage3ChecklistItems[idx] },
+                                                        set: { stage3ChecklistItems[idx] = $0 }
+                                                    )
+                                                )
+                                                .font(.system(size: 14, weight: .medium, design: .rounded))
+                                                .foregroundStyle(Color.white)
+
+                                                if stage3ChecklistItems.count > 1 {
+                                                    Button {
+                                                        stage3ChecklistItems.remove(at: idx)
+                                                    } label: {
+                                                        Image(systemName: "minus.circle.fill")
+                                                            .font(.system(size: 16))
+                                                            .foregroundStyle(Color(hex: "#FF6B6B").opacity(0.85))
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                            }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 10)
+                                            .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                        }
+                                    }
+
+                                    if stage3ChecklistItems.count < 5 {
+                                        HStack(spacing: 8) {
+                                            TextField(
+                                                "",
+                                                text: $newStage3StepText,
+                                                prompt: Text("Add activation step...").foregroundStyle(Color.white.opacity(0.32))
+                                            )
+                                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                                            .foregroundStyle(Color.white)
+
+                                            Button("Add Step") {
+                                                let clean = newStage3StepText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                                guard !clean.isEmpty, stage3ChecklistItems.count < 5 else { return }
+                                                stage3ChecklistItems.append(clean)
+                                                newStage3StepText = ""
+                                            }
+                                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                                            .foregroundStyle(Color.black)
+                                            .padding(.horizontal, 11)
+                                            .padding(.vertical, 6)
+                                            .background(DailyOSTheme.emerald, in: Capsule())
+                                            .buttonStyle(MidnightPressButtonStyle())
+                                            .disabled(newStage3StepText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                        }
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(DailyOSTheme.inputSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(DailyOSTheme.hairline, lineWidth: 1))
+                                    }
+
+                                    Button("Reset Defaults") {
+                                        stage3ChecklistItems = AlarmItem.defaultStage3ChecklistItems
+                                        stage3TimeLimitSeconds = 120
+                                    }
+                                    .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.eyebrow)
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(16)
+                            .ambientCard(accent: stage3Enabled ? DailyOSTheme.emerald : nil, cornerRadius: 20, washOpacity: 0.06)
+                        }
+
                         // Delete Button when editing existing alarm
                         if let existing = alarmToEdit {
                             Button {
@@ -555,6 +810,12 @@ struct AlarmEditorView: View {
             qrGraceSeconds = max(20, min(180, alarm.qrGraceSeconds))
             selectedBrainGame = alarm.brainGameMode
             reflexThresholdMs = max(180, min(350, alarm.reflexThresholdMs))
+            sleepCycleCount = max(4, min(6, alarm.sleepCycleCount))
+            windDownMinutes = alarm.windDownMinutes
+            bedtimeReminderEnabled = alarm.bedtimeReminderEnabled
+            stage3Enabled = alarm.stage3Enabled
+            stage3TimeLimitSeconds = alarm.stage3TimeLimitSeconds
+            stage3ChecklistItems = alarm.stage3ChecklistItems
         } else {
             var comps = calendar.dateComponents([.year, .month, .day], from: Date())
             comps.hour = 7
@@ -571,6 +832,12 @@ struct AlarmEditorView: View {
             stepsLimitExtraSeconds = 0
             qrGraceSeconds = 60
             reflexThresholdMs = WakeQRStorage.defaultReflexThresholdMs
+            sleepCycleCount = 5
+            windDownMinutes = 15
+            bedtimeReminderEnabled = true
+            stage3Enabled = true
+            stage3TimeLimitSeconds = 120
+            stage3ChecklistItems = AlarmItem.defaultStage3ChecklistItems
         }
     }
 
@@ -596,6 +863,12 @@ struct AlarmEditorView: View {
             alarm.qrGraceSeconds = qrGraceSeconds
             alarm.brainGameMode = selectedBrainGame
             alarm.reflexThresholdMs = reflexThresholdMs
+            alarm.sleepCycleCount = sleepCycleCount
+            alarm.windDownMinutes = windDownMinutes
+            alarm.bedtimeReminderEnabled = bedtimeReminderEnabled
+            alarm.stage3Enabled = stage3Enabled
+            alarm.stage3TimeLimitSeconds = stage3TimeLimitSeconds
+            alarm.stage3ChecklistItems = stage3ChecklistItems
             alarm.lastTriggeredMinuteKey = ""
             alarm.isEnabled = true
         } else {
@@ -613,7 +886,13 @@ struct AlarmEditorView: View {
                 stepsTimeLimitSeconds: clampedTimeLimit,
                 qrGraceSeconds: qrGraceSeconds,
                 brainGameMode: selectedBrainGame,
-                reflexThresholdMs: reflexThresholdMs
+                reflexThresholdMs: reflexThresholdMs,
+                sleepCycleCount: sleepCycleCount,
+                windDownMinutes: windDownMinutes,
+                bedtimeReminderEnabled: bedtimeReminderEnabled,
+                stage3Enabled: stage3Enabled,
+                stage3TimeLimitSeconds: stage3TimeLimitSeconds,
+                stage3ChecklistItems: stage3ChecklistItems
             )
             modelContext.insert(newAlarm)
         }

@@ -14,12 +14,13 @@ struct FocusTaskEditorSheet: View {
     @State private var location: String = ""
     @State private var notes: String = ""
     @State private var selectedDate: Date = Date()
-    @State private var hasSpecificTime: Bool = false
+    @State private var hasSpecificTime: Bool = true
     @State private var startTime: Date = Date()
     @State private var durationMinutes: Int = 60
     @State private var showingCustomDurationStepper: Bool = false
     @State private var requiresPhotoProof: Bool = false
     @State private var syncToGoogleCalendar: Bool = GoogleCalendarService.isAutoSyncEnabled
+    @Namespace private var scheduleModeNS
 
     private let durationPresets: [(label: String, mins: Int)] = [
         ("30m", 30),
@@ -134,13 +135,15 @@ struct FocusTaskEditorSheet: View {
                             Text("TIME & DURATION").eyebrowStyle()
 
                             VStack(spacing: 14) {
-                                // Anytime vs Specific Time segmented pill
+                                // Anytime vs Specific Time segmented pill (Matched-Geometry 120Hz glide)
                                 HStack(spacing: 4) {
-                                    scheduleModeButton("Anytime", active: !hasSpecificTime) {
-                                        withAnimation(.spring(response: 0.25)) { hasSpecificTime = false }
-                                    }
                                     scheduleModeButton("Specific Time", active: hasSpecificTime) {
-                                        withAnimation(.spring(response: 0.25)) { hasSpecificTime = true }
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        withAnimation(ProMotionSpring.glide) { hasSpecificTime = true }
+                                    }
+                                    scheduleModeButton("Anytime", active: !hasSpecificTime) {
+                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                        withAnimation(ProMotionSpring.glide) { hasSpecificTime = false }
                                     }
                                 }
                                 .padding(4)
@@ -306,10 +309,13 @@ struct FocusTaskEditorSheet: View {
                         if let existingTask {
                             Button {
                                 let linkedID = existingTask.googleCalendarEventID
-                                PhotoProofScheduler.shared.cancelProofs(for: existingTask.id.uuidString)
+                                let taskID = existingTask.id.uuidString
+                                PhotoProofScheduler.shared.cancelProofs(for: taskID)
+                                FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: taskID)
                                 modelContext.delete(existingTask)
                                 try? modelContext.save()
                                 SharedModelContainer.shared.save()
+                                FocusAutoSessionEngine.shared.evaluateAutoStartSchedule()
                                 if let linkedID {
                                     Task { await GoogleCalendarService.deleteLinkedEvent(eventID: linkedID) }
                                 }
@@ -355,12 +361,18 @@ struct FocusTaskEditorSheet: View {
 
     private func scheduleModeButton(_ title: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: .bold, design: .rounded))
-                .foregroundStyle(active ? Color.white : DailyOSTheme.eyebrow)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 9)
-                .background(active ? DailyOSTheme.buttonSurface : Color.clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            ZStack {
+                if active {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(DailyOSTheme.buttonSurface)
+                        .matchedGeometryEffect(id: "scheduleModePill", in: scheduleModeNS)
+                }
+                Text(title)
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundStyle(active ? Color.white : DailyOSTheme.eyebrow)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 9)
+            }
         }
         .buttonStyle(.plain)
     }
@@ -392,7 +404,7 @@ struct FocusTaskEditorSheet: View {
             syncToGoogleCalendar = task.syncToGoogleCalendar
         } else {
             selectedDate = initialDate
-            hasSpecificTime = false
+            hasSpecificTime = true
             startTime = defaultRoundedStartTime(for: initialDate)
             durationMinutes = 60
             requiresPhotoProof = false
@@ -400,12 +412,21 @@ struct FocusTaskEditorSheet: View {
         }
     }
 
+    /// Rounds up to the next clean 15-minute slot (e.g., 14:52 → 15:00, 14:05 → 14:15).
     private func defaultRoundedStartTime(for date: Date) -> Date {
         let cal = ISOWeekCalendar.current
+        let now = Date()
+        let nowComps = cal.dateComponents([.hour, .minute], from: now)
+        let nowHour = nowComps.hour ?? 9
+        let nowMinute = nowComps.minute ?? 0
+        let totalMins = nowHour * 60 + nowMinute
+        let roundedMins = ((totalMins / 15) + 1) * 15
+        let clampedMins = min(23 * 60 + 45, roundedMins)
+
         var comps = cal.dateComponents([.year, .month, .day], from: date)
-        let nowHour = cal.component(.hour, from: Date())
-        comps.hour = min(22, max(8, nowHour + 1))
-        comps.minute = 0
+        comps.hour = clampedMins / 60
+        comps.minute = clampedMins % 60
+        comps.second = 0
         return cal.date(from: comps) ?? date
     }
 
@@ -477,6 +498,7 @@ struct FocusTaskEditorSheet: View {
             Task { await GoogleCalendarService.pushTask(savedTask) }
         }
 
+        FocusAutoSessionEngine.shared.evaluateAutoStartSchedule()
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 }

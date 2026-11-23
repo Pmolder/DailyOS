@@ -144,10 +144,13 @@ struct HabitsListView: View {
                                 HStack(spacing: 4) {
                                     Image(systemName: "flame.fill")
                                         .font(.system(size: 12, weight: .bold))
+                                        .symbolEffect(.bounce, value: globalStreak.currentStreak)
                                         .foregroundStyle(Color(hex: "#FF8C42"))
                                     Text("\(globalStreak.currentStreak)")
                                         .font(.system(size: 13, weight: .bold, design: .rounded))
                                         .monospacedDigit()
+                                        .contentTransition(.numericText())
+                                        .animation(ProMotionSpring.pop, value: globalStreak.currentStreak)
                                         .foregroundStyle(.white)
                                 }
                                 .padding(.horizontal, 10)
@@ -261,6 +264,7 @@ struct HabitsListView: View {
                                     }
                                     .opacity(isBeingDragged ? 0.55 : 1.0)
                                     .scaleEffect(isBeingDragged ? 0.98 : 1.0)
+                                    .staggeredEntrance(index: index)
                                     .onDrag {
                                         draggingHabitID = habit.id
                                         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -392,6 +396,7 @@ struct HabitsListView: View {
 
                         Image(systemName: type.iconName)
                             .font(.system(size: 18, weight: .semibold))
+                            .symbolEffect(.bounce, value: counts.completed)
                             .foregroundStyle(accent)
                     }
 
@@ -415,6 +420,8 @@ struct HabitsListView: View {
                     Text("\(counts.completed)/\(counts.total) done")
                         .font(.system(size: 11, weight: .semibold, design: .rounded))
                         .monospacedDigit()
+                        .contentTransition(.numericText())
+                        .animation(ProMotionSpring.pop, value: counts.completed)
                         .foregroundStyle(isComplete ? accent : DailyOSTheme.eyebrow)
                 }
 
@@ -428,7 +435,7 @@ struct HabitsListView: View {
                 washOpacity: isComplete ? 0.12 : (shouldPulse ? 0.08 : 0.0)
             )
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MidnightPressButtonStyle())
     }
 
     // MARK: - Habit Reordering Persistence & Widget Sync
@@ -495,6 +502,7 @@ private struct HabitReorderDropDelegate: DropDelegate {
 private struct TodayScoreHeroCard: View {
     let summary: TodayScoreSummary
     @Binding var isExpanded: Bool
+    @State private var score100Trigger: Int = 0
 
     private var ringColor: Color {
         switch summary.score {
@@ -519,6 +527,8 @@ private struct TodayScoreHeroCard: View {
                             Text("\(summary.score)")
                                 .font(.system(size: 12, weight: .black, design: .rounded))
                                 .monospacedDigit()
+                                .contentTransition(.numericText())
+                                .animation(ProMotionSpring.ringFill, value: summary.score)
                                 .foregroundStyle(.white)
                         }
                         VStack(alignment: .leading, spacing: 1) {
@@ -536,7 +546,7 @@ private struct TodayScoreHeroCard: View {
 
                 Button {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.85)) {
+                    withAnimation(ProMotionSpring.glide) {
                         isExpanded.toggle()
                     }
                 } label: {
@@ -551,7 +561,7 @@ private struct TodayScoreHeroCard: View {
 
             if isExpanded {
                 ZStack {
-                    AmbientBreathingGlow(color: ringColor, diameter: 215)
+                    OrganicBreathingAura(color: ringColor, diameter: 220)
                     AmbientBloomRing(
                         progress: Double(summary.score) / 100.0,
                         color: ringColor,
@@ -563,6 +573,8 @@ private struct TodayScoreHeroCard: View {
                         Text("\(summary.score)")
                             .font(.system(size: 56, weight: .black, design: .rounded))
                             .monospacedDigit()
+                            .contentTransition(.numericText())
+                            .animation(ProMotionSpring.ringFill, value: summary.score)
                             .foregroundStyle(.white)
                         Text("/ 100")
                             .font(.system(size: 15, weight: .medium, design: .rounded))
@@ -588,6 +600,12 @@ private struct TodayScoreHeroCard: View {
         }
         .padding(16)
         .ambientCard(accent: ringColor, cornerRadius: 24, washOpacity: 0.08)
+        .midnightShimmer(trigger: score100Trigger, color: ringColor)
+        .onChange(of: summary.score) { oldVal, newVal in
+            if newVal == 100 && oldVal < 100 {
+                score100Trigger += 1
+            }
+        }
     }
 
     private func scoreBentoTile(title: String, value: String) -> some View {

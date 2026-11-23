@@ -218,19 +218,76 @@ final class NotificationScheduler: ObservableObject {
         let alarms = SharedModelContainer.shared.fetchAlarms()
         let habits = SharedModelContainer.shared.fetchHabits()
 
-        // Preserve any active focus task alarm cascade notifications
+        // Preserve independently managed notifications (Focus cascades, Notification Studio, Photo Proof, Focus Nudges)
+        let preservedPrefixes = [
+            "focus_cascade_",
+            DailyNotificationManager.requestIdentifierPrefix,
+            PhotoProofScheduler.identifierPrefix,
+            "focus_nudge_"
+        ]
         let existing = await center.pendingNotificationRequests()
-        let preservedFocusCount = existing.filter { $0.identifier.hasPrefix("focus_cascade_") }.count
+        let preservedCount = existing.filter { req in
+            preservedPrefixes.contains { req.identifier.hasPrefix($0) }
+        }.count
         let toRemove = existing
             .map(\.identifier)
-            .filter { !$0.hasPrefix("focus_cascade_") }
+            .filter { id in !preservedPrefixes.contains { id.hasPrefix($0) } }
         center.removePendingNotificationRequests(withIdentifiers: toRemove)
 
         let now = Date()
-        var totalScheduled = preservedFocusCount
+        var totalScheduled = preservedCount
         var alarmBurstScheduled = 0
         var habitScheduled = 0
         var summaries: [QueuedNotificationSummary] = []
+
+        // 0. Automatic Sleep-Cycle Wind-Down Bedtime Reminders for Enabled Alarms
+        for alarm in alarms where alarm.isEnabled && alarm.bedtimeReminderEnabled {
+            let bed = alarm.bedtimeSchedule()
+            let content = UNMutableNotificationContent()
+            content.title = "🌙 Wind-Down for \(alarm.formattedTime) Wake"
+            content.body = "Start Night Routine now & lights out by \(bed.lightsOutText) for \(alarm.sleepCycleCount) full sleep cycles (\(alarm.sleepDurationHoursText))."
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+            content.userInfo = [
+                "type": "bedtime_lockin",
+                "alarmID": alarm.id.uuidString
+            ]
+
+            let activeDays = alarm.repeatDays
+            if activeDays.isEmpty || activeDays.count == 7 {
+                guard totalScheduled < Self.maxPendingLimit else { break }
+                var comps = DateComponents()
+                comps.calendar = ISOWeekCalendar.current
+                comps.hour = bed.windDownHour
+                comps.minute = bed.windDownMinute
+                let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: !activeDays.isEmpty)
+                let req = UNNotificationRequest(identifier: "bedtime_lockin_\(alarm.id.uuidString)_all", content: content, trigger: trigger)
+                if (try? await center.add(req)) != nil {
+                    totalScheduled += 1
+                }
+            } else {
+                for wakeWeekday in activeDays.sorted() {
+                    guard totalScheduled < Self.maxPendingLimit else { break }
+                    // Shift weekday back by 1 if wind-down occurs the evening before wake time
+                    let targetWeekday: Int
+                    if bed.fallsOnPreviousDay {
+                        targetWeekday = (wakeWeekday == 1) ? 7 : (wakeWeekday - 1)
+                    } else {
+                        targetWeekday = wakeWeekday
+                    }
+                    var comps = DateComponents()
+                    comps.calendar = ISOWeekCalendar.current
+                    comps.weekday = targetWeekday
+                    comps.hour = bed.windDownHour
+                    comps.minute = bed.windDownMinute
+                    let trigger = UNCalendarNotificationTrigger(dateMatching: comps, repeats: true)
+                    let req = UNNotificationRequest(identifier: "bedtime_lockin_\(alarm.id.uuidString)_w\(targetWeekday)", content: content, trigger: trigger)
+                    if (try? await center.add(req)) != nil {
+                        totalScheduled += 1
+                    }
+                }
+            }
+        }
 
         // 1. Wake alarm 20-alert fallback burst spaced 5s apart
         let enabledAlarmsWithDates: [(alarm: AlarmItem, nextDate: Date)] = alarms

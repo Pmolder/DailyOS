@@ -66,7 +66,7 @@ struct AlarmsListView: View {
                             if alarms.isEmpty {
                                 emptyAlarmsCard
                             } else {
-                                ForEach(alarms) { alarm in
+                                ForEach(Array(alarms.enumerated()), id: \.element.id) { idx, alarm in
                                     AlarmCardRowView(
                                         alarm: alarm,
                                         onToggle: { isOn in
@@ -87,6 +87,7 @@ struct AlarmsListView: View {
                                             deleteAlarm(alarm)
                                         }
                                     )
+                                    .staggeredEntrance(index: idx)
                                 }
                             }
                         }
@@ -332,32 +333,60 @@ private struct AlarmCardRowView: View {
                 .buttonStyle(MidnightPressStyle())
             }
 
-            // Stage-1 Physical Mission + Stage-2 Brain Game Pills
-            HStack(spacing: 8) {
-                Label(alarm.missionSummary, systemImage: alarm.missionType.iconName)
-                    .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 5)
-                    .background(
-                        (alarm.isEnabled ? DailyOSTheme.indigoGlow : DailyOSTheme.eyebrow).opacity(0.15),
-                        in: Capsule()
-                    )
-                    .foregroundStyle(alarm.isEnabled ? DailyOSTheme.periwinkle : Color.white.opacity(0.55))
-
-                if alarm.brainGameMode != .off {
-                    Label(alarm.brainGameMode.shortBadge, systemImage: alarm.brainGameMode.iconName)
+            // Stage-1 Physical Mission + Stage-2 Brain Game + Stage-3 / Bedtime Pills
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Label(alarm.missionSummary, systemImage: alarm.missionType.iconName)
                         .font(.system(size: 11, weight: .bold, design: .rounded))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(DailyOSTheme.inputSurface, in: Capsule())
-                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
-                        .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.85) : DailyOSTheme.eyebrow)
-                }
+                        .background(
+                            (alarm.isEnabled ? DailyOSTheme.indigoGlow : DailyOSTheme.eyebrow).opacity(0.15),
+                            in: Capsule()
+                        )
+                        .foregroundStyle(alarm.isEnabled ? DailyOSTheme.periwinkle : Color.white.opacity(0.55))
 
-                Spacer(minLength: 0)
+                    if alarm.brainGameMode != .off {
+                        Label(alarm.brainGameMode.shortBadge, systemImage: alarm.brainGameMode.iconName)
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(DailyOSTheme.inputSurface, in: Capsule())
+                            .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                            .foregroundStyle(alarm.isEnabled ? Color.white.opacity(0.85) : DailyOSTheme.eyebrow)
+                    }
+
+                    if alarm.stage3Enabled {
+                        Label("Stage 3", systemImage: "checklist")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(DailyOSTheme.solarAccent.opacity(alarm.isEnabled ? 0.14 : 0.06), in: Capsule())
+                            .foregroundStyle(alarm.isEnabled ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow)
+                    }
+
+                    if alarm.bedtimeReminderEnabled {
+                        let bed = alarm.bedtimeSchedule()
+                        Label("Bed \(bed.lightsOutText)", systemImage: "moon.zzz.fill")
+                            .font(.system(size: 11, weight: .bold, design: .rounded))
+                            .monospacedDigit()
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 5)
+                            .background(DailyOSTheme.indigoGlow.opacity(alarm.isEnabled ? 0.14 : 0.06), in: Capsule())
+                            .foregroundStyle(alarm.isEnabled ? DailyOSTheme.periwinkle : DailyOSTheme.eyebrow)
+                    }
+                }
             }
         }
         .padding(16)
+        .background {
+            if alarm.isEnabled {
+                OrganicBreathingAura(color: Color(hex: "#FFB020"), diameter: 180)
+                    .offset(x: -90, y: -30)
+                    .opacity(0.28)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         .ambientCard(
             accent: alarm.isEnabled ? Color(hex: "#FFB020") : nil,
             cornerRadius: 22,

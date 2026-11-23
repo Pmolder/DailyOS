@@ -26,7 +26,7 @@ jobs:
         id: meta
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          VERSION="4.1.0"
+          VERSION="4.2.0"
           BUILD_NUM="${{ github.run_number }}"
           IPA_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}.ipa"
           ARTIFACT_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}"
@@ -71,12 +71,14 @@ jobs:
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/DailyOS.app Payload/
 
-          echo "=== Verifying Main App Info.plist Version, Live Activities & Privacy Keys ==="
-          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSSupportsLiveActivities|NSMotionUsageDescription|NSCameraUsageDescription|NSCalendarsFullAccessUsageDescription"
+          echo "=== Verifying Main App Info.plist Version, Live Activities, PiP Audio Mode & Privacy Keys ==="
+          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSSupportsLiveActivities|UIBackgroundModes|NSMotionUsageDescription|NSCameraUsageDescription|NSCalendarsFullAccessUsageDescription|NSPhotoLibraryAddUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSSupportsLiveActivities"
+          plutil -p Payload/DailyOS.app/Info.plist | grep -q "UIBackgroundModes"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSMotionUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCameraUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCalendarsFullAccessUsageDescription"
+          plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSPhotoLibraryAddUsageDescription"
 
           echo "=== Verifying Embedded DailyOSWidgets.appex & Matching Versions ==="
           WIDGET_APPEX="Payload/DailyOS.app/PlugIns/DailyOSWidgets.appex"
@@ -97,7 +99,7 @@ jobs:
           fi
           echo "OK: DailyOS and DailyOSWidgets versions match (${APP_SHORT} b${APP_VER})"
 
-          echo "=== Verifying v4.1 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
+          echo "=== Verifying v4.2 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
           python3 - <<'EOF'
           from pathlib import Path
           import sys
@@ -120,6 +122,11 @@ jobs:
               "Main Character Morning",
               "Weekly Winter Arc Recap",
               "gemini-3.5-flash-lite",
+              "TURN ALARM OFF & START DAY",
+              "Drink a full glass of water",
+              "SLEEP CYCLES & BEDTIME",
+              "STAGE 3 • MORNING ACTIVATION",
+              "Swipe away for Floating Pill",
           ]
           forbidden = [
               "AI Camera Pushups",
@@ -127,7 +134,7 @@ jobs:
 
           for item in required:
               if not has_string(item):
-                  print(f"ERROR: Missing expected v4.1 string in binary: {item}")
+                  print(f"ERROR: Missing expected v4.2 string in binary: {item}")
                   sys.exit(1)
               print(f"OK (found): {item}")
 

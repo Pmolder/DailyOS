@@ -8,6 +8,7 @@ struct ContentView: View {
     @ObservedObject private var notificationScheduler = NotificationScheduler.shared
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
     @ObservedObject private var photoProofScheduler = PhotoProofScheduler.shared
+    @ObservedObject private var sessionEngine = FocusAutoSessionEngine.shared
 
     @State private var selectedTab: Int = 0
     @State private var lastActiveDayKey: String = HabitItem.dateKey()
@@ -87,6 +88,20 @@ struct ContentView: View {
         ) {
             FocusTaskAlarmFullScreenView()
         }
+        // Global Auto-Start & Deep Work Timer Sheet (reachable from Focus Tab, Start Nudges & Floating PiP Pill)
+        .fullScreenCover(
+            isPresented: Binding(
+                get: {
+                    sessionEngine.shouldPresentTimerSheet
+                    && !alarmEngine.isAlarmRinging
+                    && photoProofScheduler.activeCaptureRequest == nil
+                    && !focusManager.isFocusAlarmFullScreenPresented
+                },
+                set: { sessionEngine.shouldPresentTimerSheet = $0 }
+            )
+        ) {
+            FocusActiveTimerSheet()
+        }
         .task {
             _ = await notificationScheduler.requestAuthorizationIfNeeded()
             handleMidnightRolloverIfNeeded()
@@ -94,6 +109,7 @@ struct ContentView: View {
             alarmEngine.syncWithAlarms()
             focusManager.handleAppReopenCheck()
             await focusManager.syncAllSources()
+            sessionEngine.evaluateAutoStartSchedule()
             await DailyNotificationManager.shared.refreshScheduledNotifications()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
@@ -111,6 +127,7 @@ struct ContentView: View {
                 focusManager.handleAppReopenCheck()
                 Task {
                     await focusManager.syncAllSources()
+                    sessionEngine.evaluateAutoStartSchedule()
                     await DailyNotificationManager.shared.refreshScheduledNotifications()
                 }
             } else if newPhase == .background || newPhase == .inactive {

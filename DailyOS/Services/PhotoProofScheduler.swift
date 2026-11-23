@@ -1,6 +1,7 @@
 import Foundation
 import UserNotifications
 import Combine
+import UIKit
 
 // MARK: - Configurable Smart Focus Photo Proof Settings (UserDefaults / @AppStorage)
 
@@ -198,7 +199,15 @@ final class PhotoProofScheduler: ObservableObject {
     static let identifierPrefix = "dailyos_photoproof_"
     static let notificationType = "smart_photo_proof"
 
-    @Published var activeCaptureRequest: ActivePhotoProofRequest? = nil
+    @Published var activeCaptureRequest: ActivePhotoProofRequest? = nil {
+        didSet {
+            if activeCaptureRequest != nil && oldValue?.id != activeCaptureRequest?.id {
+                if FocusPiPManager.shared.isPiPActive {
+                    UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+                }
+            }
+        }
+    }
     @Published var logRevision: Int = 0 // Triggers UI refresh when statuses update
 
     private let center = UNUserNotificationCenter.current()

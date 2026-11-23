@@ -17,6 +17,7 @@ struct AlarmRingingView: View {
         case ringingGate
         case stage1Physical
         case stage2BrainGame
+        case stage3Activation
         case wakeComplete
     }
 
@@ -49,8 +50,15 @@ struct AlarmRingingView: View {
 
     private let uiTickTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
+    private var hasStage3Activation: Bool {
+        alarm.stage3Enabled && !alarm.stage3ChecklistItems.isEmpty
+    }
+
     private var totalStageCount: Int {
-        resolvedBrainGame == nil ? 1 : 2
+        var count = 1
+        if resolvedBrainGame != nil { count += 1 }
+        if hasStage3Activation { count += 1 }
+        return count
     }
 
     var body: some View {
@@ -68,10 +76,23 @@ struct AlarmRingingView: View {
                         isPracticeMode: false,
                         onCompleted: { summary in
                             brainCompletionSummary = summary
-                            enterWakeCompleteSummary()
+                            advanceAfterStage2()
                         }
                     )
                 }
+            case .stage3Activation:
+                Stage3WakeChecklistView(
+                    items: alarm.stage3ChecklistItems,
+                    timeLimitSeconds: alarm.stage3TimeLimitSeconds,
+                    totalStages: totalStageCount,
+                    onDeadlineExpired: {
+                        alarmEngine.startOrResumeInactivityPenalty()
+                    },
+                    onCompleteAll: {
+                        enterWakeCompleteSummary()
+                    }
+                )
+                .transition(.scale(scale: 0.94).combined(with: .opacity))
             case .wakeComplete:
                 wakeCompleteSummaryView
             }
@@ -571,6 +592,18 @@ struct AlarmRingingView: View {
         if resolvedBrainGame != nil {
             withAnimation(.spring(response: 0.35)) {
                 stage = .stage2BrainGame
+            }
+        } else {
+            advanceAfterStage2()
+        }
+    }
+
+    private func advanceAfterStage2() {
+        _ = alarmEngine.silenceForChallenge()
+        if hasStage3Activation {
+            UIScreen.main.brightness = 1.0
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.82)) {
+                stage = .stage3Activation
             }
         } else {
             enterWakeCompleteSummary()

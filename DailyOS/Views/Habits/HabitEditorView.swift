@@ -23,6 +23,8 @@ struct HabitEditorView: View {
     @State private var soundOption: NotificationSoundOption = .chimeBell
 
     @State private var showingIconPicker = false
+    @Namespace private var habitTypeNS
+    @Namespace private var trackingModeNS
 
     private var selectedAccent: Color {
         Color(hex: colorHex)
@@ -171,7 +173,7 @@ struct HabitEditorView: View {
                             }
                         }
 
-                        // HABIT TYPE Segmented Picker (Build A Habit vs Quit A Habit)
+                        // HABIT TYPE Segmented Picker (Build A Habit vs Quit A Habit — 120Hz Matched-Geometry)
                         VStack(alignment: .leading, spacing: 8) {
                             Text("HABIT TYPE").eyebrowStyle()
 
@@ -180,22 +182,25 @@ struct HabitEditorView: View {
                                     let selected = kind == option
                                     Button {
                                         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                        withAnimation(.spring(response: 0.25)) {
+                                        withAnimation(ProMotionSpring.glide) {
                                             kind = option
                                             if option == .quit {
                                                 trackingMode = .binary
                                             }
                                         }
                                     } label: {
-                                        Text(option.displayTitle)
-                                            .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                            .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 11)
-                                            .background(
-                                                selected ? DailyOSTheme.buttonSurface : Color.clear,
-                                                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                            )
+                                        ZStack {
+                                            if selected {
+                                                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                                    .fill(DailyOSTheme.buttonSurface)
+                                                    .matchedGeometryEffect(id: "habitKindPill", in: habitTypeNS)
+                                            }
+                                            Text(option.displayTitle)
+                                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
+                                                .frame(maxWidth: .infinity)
+                                                .padding(.vertical, 11)
+                                        }
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -210,7 +215,7 @@ struct HabitEditorView: View {
                                 .frame(maxWidth: .infinity, alignment: .center)
                         }
 
-                        // TRACKING MODE (Simple Check-in vs Numeric Goal)
+                        // TRACKING MODE (Simple Check-in vs Numeric Goal — 120Hz Matched-Geometry)
                         if kind == .build {
                             VStack(alignment: .leading, spacing: 10) {
                                 Text("TRACKING").eyebrowStyle()
@@ -220,19 +225,22 @@ struct HabitEditorView: View {
                                         let selected = trackingMode == mode
                                         Button {
                                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                                            withAnimation(.spring(response: 0.25)) {
+                                            withAnimation(ProMotionSpring.glide) {
                                                 trackingMode = mode
                                             }
                                         } label: {
-                                            Text(mode.displayTitle)
-                                                .font(.system(size: 14, weight: .semibold, design: .rounded))
-                                                .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 11)
-                                                .background(
-                                                    selected ? DailyOSTheme.buttonSurface : Color.clear,
-                                                    in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-                                                )
+                                            ZStack {
+                                                if selected {
+                                                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                                                        .fill(DailyOSTheme.buttonSurface)
+                                                        .matchedGeometryEffect(id: "trackingModePill", in: trackingModeNS)
+                                                }
+                                                Text(mode.displayTitle)
+                                                    .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                    .foregroundStyle(selected ? Color.white : DailyOSTheme.eyebrow)
+                                                    .frame(maxWidth: .infinity)
+                                                    .padding(.vertical, 11)
+                                            }
                                         }
                                         .buttonStyle(.plain)
                                     }
