@@ -37,8 +37,13 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
             }
         } else if let type = userInfo["type"] as? String, type == PhotoProofScheduler.notificationType {
             Task { @MainActor in
-                _ = PhotoProofScheduler.shared.handleNotificationInteraction(userInfo: userInfo)
-                completionHandler([.banner, .sound, .list])
+                if FocusPiPManager.shared.isPiPActive {
+                    // Solid RED vibrating PiP pill is the sole alert while PiP is active — zero duplicate banners
+                    completionHandler([])
+                } else {
+                    _ = PhotoProofScheduler.shared.handleNotificationInteraction(userInfo: userInfo)
+                    completionHandler([.banner, .sound, .list])
+                }
             }
             return
         } else if let type = userInfo["type"] as? String, type == FocusNudgeScheduler.startNudgeType {

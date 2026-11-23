@@ -24,36 +24,44 @@ struct ContentView: View {
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            HabitsListView(onOpenFocusTab: {
-                withAnimation(ProMotionSpring.glide) {
-                    selectedTab = 2
-                }
-            })
-                .id("habits_\(dayRolloverToken.uuidString)")
-                .tabItem {
-                    Label("Habits", systemImage: "square.grid.3x3.fill")
-                }
-                .tag(0)
+        ZStack(alignment: .topLeading) {
+            // Active root-window AVSampleBufferDisplayLayer host (2x2pt, 0.01 opacity, never hidden — zero black screen)
+            PiPHostView()
+                .frame(width: 2, height: 2)
+                .opacity(0.01)
+                .allowsHitTesting(false)
 
-            AlarmsListView()
-                .tabItem {
-                    Label("Alarms", systemImage: "alarm.waves.left.and.right.fill")
-                }
-                .tag(1)
+            TabView(selection: $selectedTab) {
+                HabitsListView(onOpenFocusTab: {
+                    withAnimation(ProMotionSpring.glide) {
+                        selectedTab = 2
+                    }
+                })
+                    .id("habits_\(dayRolloverToken.uuidString)")
+                    .tabItem {
+                        Label("Habits", systemImage: "square.grid.3x3.fill")
+                    }
+                    .tag(0)
 
-            FocusTabView()
-                .id("focus_\(dayRolloverToken.uuidString)")
-                .tabItem {
-                    Label("Focus", systemImage: "timer")
-                }
-                .tag(2)
+                AlarmsListView()
+                    .tabItem {
+                        Label("Alarms", systemImage: "alarm.waves.left.and.right.fill")
+                    }
+                    .tag(1)
 
-            SettingsView()
-                .tabItem {
-                    Label("Settings", systemImage: "gearshape.fill")
-                }
-                .tag(3)
+                FocusTabView()
+                    .id("focus_\(dayRolloverToken.uuidString)")
+                    .tabItem {
+                        Label("Focus", systemImage: "timer")
+                    }
+                    .tag(2)
+
+                SettingsView()
+                    .tabItem {
+                        Label("Settings", systemImage: "gearshape.fill")
+                    }
+                    .tag(3)
+            }
         }
         .tint(DailyOSTheme.indigoGlow)
         .preferredColorScheme(.dark)
@@ -119,8 +127,15 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
             handleMidnightRolloverIfNeeded()
         }
+        .onChange(of: photoProofScheduler.activeCaptureRequest) { oldReq, newReq in
+            // Seamless return from PhotoProofCaptureSheet straight back into active timer sheet
+            if oldReq != nil && newReq == nil && sessionEngine.hasLiveSession {
+                sessionEngine.shouldPresentTimerSheet = true
+            }
+        }
         .onChange(of: scenePhase) { _, newPhase in
             if newPhase == .active {
+                FocusPiPManager.shared.handleAppBecameActive()
                 DispatchQueue.main.async {
                     SystemVolumeController.shared.ensureMountedInKeyWindow()
                 }

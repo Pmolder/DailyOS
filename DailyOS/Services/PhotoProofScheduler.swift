@@ -189,7 +189,7 @@ struct ActivePhotoProofRequest: Identifiable, Equatable {
     let deadline: Date
 }
 
-// MARK: - Smart Focus Photo Proof & Random Spot-Check Scheduler (100% Reliable With or Without Gemini Key)
+// MARK: - Smart Focus Photo Proof Scheduler (Exact 30s / 10s / Every-30s Backup Alerts + PiP Zero-Double-Alert Coordination)
 
 @MainActor
 final class PhotoProofScheduler: ObservableObject {
@@ -198,12 +198,13 @@ final class PhotoProofScheduler: ObservableObject {
     static let identifierPrefix = "dailyos_photoproof_"
     static let notificationType = "smart_photo_proof"
 
-    private struct ScheduledForegroundCheckIn {
+    private struct ScheduledCheckIn {
         let checkInID: String
         let taskID: String
         let taskTitle: String
         let taskNotes: String
         let isInitialCheck: Bool
+        let isRandomized: Bool
         let fireDate: Date
         let taskStart: Date
         let taskEnd: Date
@@ -213,17 +214,41 @@ final class PhotoProofScheduler: ObservableObject {
     @Published var activeCaptureRequest: ActivePhotoProofRequest? = nil
     @Published var logRevision: Int = 0
 
+    var hasActiveCheckIn: Bool {
+        activeCaptureRequest != nil
+    }
+
+    var activeCheckInRemainingSeconds: Int? {
+        guard let req = activeCaptureRequest else { return nil }
+        let secs = Int(ceil(req.deadline.timeIntervalSinceNow))
+        return secs > 0 ? secs : 0
+    }
+
     private let center = UNUserNotificationCenter.current()
-    private var foregroundQueue: [ScheduledForegroundCheckIn] = []
+    private var scheduledQueue: [ScheduledCheckIn] = []
     private var firedCheckInIDs: Set<String> = []
-    private var foregroundTickCancellable: AnyCancellable?
+    private var suppressedBackupCheckInIDs: Set<String> = []
+    private var tickCancellable: AnyCancellable?
 
     private init() {
-        foregroundTickCancellable = Timer.publish(every: 1.0, on: .main, in: .common)
+        tickCancellable = Timer.publish(every: 1.0, on: .main, in: .common)
             .autoconnect()
             .sink { [weak self] _ in
-                self?.evaluateForegroundCheckIns()
+                self?.evaluateScheduledCheckIns()
             }
+    }
+
+    // MARK: - PiP Pill Center Indicator (Non-Nil ONLY for Non-Randomized Fixed-Interval Check-Ins)
+
+    func fixedIntervalMinutesUntilNextPhoto(for taskID: String) -> Int? {
+        let now = Date()
+        guard let next = scheduledQueue
+            .filter({ $0.taskID == taskID && !$0.isRandomized && $0.fireDate > now })
+            .sorted(by: { $0.fireDate < $1.fireDate })
+            .first else {
+            return nil
+        }
+        return max(1, Int(ceil(next.fireDate.timeIntervalSince(now) / 60.0)))
     }
 
     // MARK: - Automatic Notification Permission Check
@@ -236,7 +261,7 @@ final class PhotoProofScheduler: ObservableObject {
         }
     }
 
-    // MARK: - Schedule Opted-In Task (Reliable T0 + 2 Min Initial Check + Recurring / Hidden Random Spot-Check)
+    // MARK: - Schedule Opted-In Task (T0 + 2m Initial Check + Fixed Recurring OR Hidden Random Mid-Task Check)
 
     func scheduleProofs(
         taskID: String,
@@ -263,26 +288,28 @@ final class PhotoProofScheduler: ObservableObject {
 
         guard effectiveEnd > now.addingTimeInterval(35) else { return }
 
-        // 1. Initial Photo Check-In at T0 + initialPhotoMinutes (default 2 minutes after start)
+        let isLongFixedIntervalTask = durationMinutes >= intervalMins
+
+        // 1. Initial Photo Check-In at T0 + initialPhotoMinutes (default 2 min after start)
         let initialCheckID = "init_\(UUID().uuidString.prefix(8))"
         let desiredInitialFire = effectiveStart.addingTimeInterval(TimeInterval(initialMins * 60))
         let maxAllowedInitial = effectiveEnd.addingTimeInterval(-TimeInterval(max(35, captureSecs)))
         let initialFireDate = min(desiredInitialFire, maxAllowedInitial)
 
         if initialFireDate > now.addingTimeInterval(2.0) {
-            scheduleCheckInAlert(
+            scheduleCheckIn(
                 taskID: taskID,
                 checkInID: initialCheckID,
                 taskTitle: cleanTitle,
                 taskNotes: taskNotes,
                 isInitial: true,
+                isRandomized: !isLongFixedIntervalTask,
                 fireDate: initialFireDate,
                 taskStart: effectiveStart,
                 taskEnd: effectiveEnd,
                 captureSeconds: captureSecs
             )
         } else if triggerInitialImmediatelyIfNow {
-            let initialDeadline = now.addingTimeInterval(TimeInterval(captureSecs))
             activeCaptureRequest = ActivePhotoProofRequest(
                 id: initialCheckID,
                 taskID: taskID,
@@ -291,12 +318,12 @@ final class PhotoProofScheduler: ObservableObject {
                 isInitialCheck: true,
                 taskStart: effectiveStart,
                 taskEnd: effectiveEnd,
-                deadline: initialDeadline
+                deadline: now.addingTimeInterval(TimeInterval(captureSecs))
             )
         }
 
-        // 2. Follow-Up Spot-Checks: Long Task (>= interval) vs Short Task (< interval)
-        if durationMinutes >= intervalMins {
+        // 2. Follow-Up Spot-Checks: Long Fixed-Interval vs Short Hidden Random
+        if isLongFixedIntervalTask {
             scheduleRecurringChecks(
                 taskID: taskID,
                 taskTitle: cleanTitle,
@@ -308,27 +335,27 @@ final class PhotoProofScheduler: ObservableObject {
                 captureSeconds: captureSecs
             )
         } else {
-            // Hidden Uniformly Random Mid-Task Spot-Check (never exposed in UI)
+            // 1 Hidden Uniformly Random Mid-Task Spot-Check (never exposed on pill or UI)
             let earliest = initialFireDate.addingTimeInterval(60)
             let latest = effectiveEnd.addingTimeInterval(-TimeInterval(max(60, captureSecs)))
 
             let randomFireDate: Date
             if earliest < latest {
                 let span = latest.timeIntervalSince(earliest)
-                let offset = Double.random(in: 0...span)
-                randomFireDate = earliest.addingTimeInterval(offset)
+                randomFireDate = earliest.addingTimeInterval(Double.random(in: 0...span))
             } else {
                 let fraction = Double.random(in: 0.45...0.80)
                 randomFireDate = effectiveStart.addingTimeInterval(effectiveEnd.timeIntervalSince(effectiveStart) * fraction)
             }
 
             if randomFireDate > initialFireDate.addingTimeInterval(30) && randomFireDate < effectiveEnd {
-                scheduleCheckInAlert(
+                scheduleCheckIn(
                     taskID: taskID,
                     checkInID: "spot_\(UUID().uuidString.prefix(8))",
                     taskTitle: cleanTitle,
                     taskNotes: taskNotes,
                     isInitial: false,
+                    isRandomized: true,
                     fireDate: randomFireDate,
                     taskStart: effectiveStart,
                     taskEnd: effectiveEnd,
@@ -338,7 +365,6 @@ final class PhotoProofScheduler: ObservableObject {
         }
     }
 
-    /// Re-anchors recurring interval check-ins cleanly to `T_initial + photoIntervalMinutes` after Initial Photo is submitted.
     func handleInitialPhotoSubmitted(for request: ActivePhotoProofRequest) {
         let intervalMins = PhotoProofSettings.photoIntervalMinutes
         let captureSecs = PhotoProofSettings.photoCaptureSeconds
@@ -346,7 +372,7 @@ final class PhotoProofScheduler: ObservableObject {
 
         guard request.isInitialCheck, totalDurationMins >= intervalMins else { return }
 
-        cancelPendingCheckIns(forTaskID: request.taskID, keepOnlyCheckInID: nil)
+        cancelPendingCheckIns(forTaskID: request.taskID)
         scheduleRecurringChecks(
             taskID: request.taskID,
             taskTitle: request.taskTitle,
@@ -374,14 +400,15 @@ final class PhotoProofScheduler: ObservableObject {
         let cutoff = taskEnd.addingTimeInterval(-120)
         var index = 1
 
-        while cursor <= cutoff && index <= 12 {
+        while cursor <= cutoff && index <= 8 {
             if cursor > Date().addingTimeInterval(10) {
-                scheduleCheckInAlert(
+                scheduleCheckIn(
                     taskID: taskID,
                     checkInID: "rec\(index)_\(UUID().uuidString.prefix(6))",
                     taskTitle: taskTitle,
                     taskNotes: taskNotes,
                     isInitial: false,
+                    isRandomized: false,
                     fireDate: cursor,
                     taskStart: taskStart,
                     taskEnd: taskEnd,
@@ -393,27 +420,28 @@ final class PhotoProofScheduler: ObservableObject {
         }
     }
 
-    // MARK: - Dual Trigger: Live Foreground Timer + 3-Pulse Time-Sensitive Notification Burst (T+0s, T+8s, T+16s)
+    // MARK: - Exact Backup Notification Schedule: -30s, -10s, and +0s/+30s/+60s/+90s/+120s/+150s
 
-    private func scheduleCheckInAlert(
+    private func scheduleCheckIn(
         taskID: String,
         checkInID: String,
         taskTitle: String,
         taskNotes: String,
         isInitial: Bool,
+        isRandomized: Bool,
         fireDate: Date,
         taskStart: Date,
         taskEnd: Date,
         captureSeconds: Int
     ) {
-        // 1. Live foreground trigger so PhotoProofCaptureSheet pops up immediately if DailyOS is open
-        foregroundQueue.append(
-            ScheduledForegroundCheckIn(
+        scheduledQueue.append(
+            ScheduledCheckIn(
                 checkInID: checkInID,
                 taskID: taskID,
                 taskTitle: taskTitle,
                 taskNotes: taskNotes,
                 isInitialCheck: isInitial,
+                isRandomized: isRandomized,
                 fireDate: fireDate,
                 taskStart: taskStart,
                 taskEnd: taskEnd,
@@ -421,60 +449,113 @@ final class PhotoProofScheduler: ObservableObject {
             )
         )
 
-        // 2. Time-Sensitive UNUserNotificationCenter burst (T+0s, T+8s, T+16s) for background/locked phone
-        let deadline = fireDate.addingTimeInterval(TimeInterval(captureSeconds))
-        let offsets: [Double] = [0.0, 8.0, 16.0]
+        let now = Date()
+        // Extend backup tap window to cover the repeating +0s..+150s reminders if phone was locked
+        let backupDeadline = fireDate.addingTimeInterval(TimeInterval(max(captureSeconds, 180)))
+        let baseInfo: [String: Any] = [
+            "type": Self.notificationType,
+            "checkInID": checkInID,
+            "taskID": taskID,
+            "taskTitle": taskTitle,
+            "taskNotes": taskNotes,
+            "isInitialCheck": isInitial,
+            "taskStartTimestamp": taskStart.timeIntervalSince1970,
+            "taskEndTimestamp": taskEnd.timeIntervalSince1970,
+            "deadlineTimestamp": backupDeadline.timeIntervalSince1970
+        ]
 
-        for (pulse, offset) in offsets.enumerated() {
-            guard offset < Double(captureSeconds) - 2.0 else { continue }
-            let pulseDate = fireDate.addingTimeInterval(offset)
-            let intervalFromNow = pulseDate.timeIntervalSinceNow
-            guard intervalFromNow > 1.0 else { continue }
-
-            let secondsLeft = max(1, captureSeconds - Int(round(offset)))
+        // 1. 30 Seconds Before (`T_capture - 30s`)
+        let pre30Interval = fireDate.addingTimeInterval(-30).timeIntervalSince(now)
+        if pre30Interval > 2.0 {
             let content = UNMutableNotificationContent()
-            content.title = "Photo Proof — \(secondsLeft)s Left"
-            content.body = "Snap a quick photo for \"\(taskTitle)\" right now!"
+            content.title = "Photo proof in 30s"
+            content.body = "Get ready to snap a photo for \(taskTitle)."
             content.sound = .default
             content.interruptionLevel = .timeSensitive
-            content.userInfo = [
-                "type": Self.notificationType,
-                "checkInID": checkInID,
-                "taskID": taskID,
-                "taskTitle": taskTitle,
-                "taskNotes": taskNotes,
-                "isInitialCheck": isInitial,
-                "taskStartTimestamp": taskStart.timeIntervalSince1970,
-                "taskEndTimestamp": taskEnd.timeIntervalSince1970,
-                "deadlineTimestamp": deadline.timeIntervalSince1970
-            ]
+            content.threadIdentifier = "photo_proof_\(checkInID)"
+            content.userInfo = baseInfo
 
-            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: intervalFromNow, repeats: false)
-            let identifier = "\(Self.identifierPrefix)\(taskID)_\(checkInID)_p\(pulse)"
-            let request = UNNotificationRequest(identifier: identifier, content: content, trigger: trigger)
-            center.add(request, withCompletionHandler: nil)
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: pre30Interval, repeats: false)
+            let id = "\(Self.identifierPrefix)\(taskID)_\(checkInID)_pre30"
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger), withCompletionHandler: nil)
+        }
+
+        // 2. 10 Seconds Before (`T_capture - 10s`)
+        let pre10Interval = fireDate.addingTimeInterval(-10).timeIntervalSince(now)
+        if pre10Interval > 2.0 {
+            let content = UNMutableNotificationContent()
+            content.title = "Photo proof in 10s"
+            content.body = "Prepare to post your photo for \(taskTitle)."
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+            content.threadIdentifier = "photo_proof_\(checkInID)"
+            content.userInfo = baseInfo
+
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: pre10Interval, repeats: false)
+            let id = "\(Self.identifierPrefix)\(taskID)_\(checkInID)_pre10"
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger), withCompletionHandler: nil)
+        }
+
+        // 3. At `T_capture` (`0s`) and Every 30 Seconds After (`+0s, +30s, +60s, +90s, +120s, +150s`)
+        let repeatOffsets: [Double] = [0, 30, 60, 90, 120, 150]
+        for (idx, offset) in repeatOffsets.enumerated() {
+            let pulseDate = fireDate.addingTimeInterval(offset)
+            let interval = pulseDate.timeIntervalSince(now)
+            guard interval > 1.0, pulseDate < taskEnd else { continue }
+
+            let content = UNMutableNotificationContent()
+            content.title = "Post picture now!"
+            content.body = "Capture your photo proof for \(taskTitle)."
+            content.sound = .default
+            content.interruptionLevel = .timeSensitive
+            content.threadIdentifier = "photo_proof_\(checkInID)"
+            content.userInfo = baseInfo
+
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: interval, repeats: false)
+            let id = "\(Self.identifierPrefix)\(taskID)_\(checkInID)_p\(idx)"
+            center.add(UNNotificationRequest(identifier: id, content: content, trigger: trigger), withCompletionHandler: nil)
         }
     }
 
-    func evaluateForegroundCheckIns() {
-        guard !foregroundQueue.isEmpty else { return }
+    // MARK: - Live Heartbeat (Zero Double Alerts With Active PiP Pill + Immediate Foreground Capture)
+
+    func evaluateScheduledCheckIns() {
         let now = Date()
 
-        // Drop expired items
-        foregroundQueue.removeAll { item in
-            let deadline = item.fireDate.addingTimeInterval(TimeInterval(item.captureSeconds))
-            return deadline <= now
+        // Expire active capture request if its countdown runs out while PiP is showing RED alert
+        if let active = activeCaptureRequest, active.deadline <= now {
+            markMissedAndDismiss(active)
+        }
+
+        guard !scheduledQueue.isEmpty else { return }
+
+        // If PiP pill is currently active and a check-in is within 40s, cancel its backup banners so ONLY the red vibrating pill alerts
+        if FocusPiPManager.shared.isPiPActive {
+            for item in scheduledQueue where !suppressedBackupCheckInIDs.contains(item.checkInID) {
+                let untilFire = item.fireDate.timeIntervalSince(now)
+                if untilFire <= 40.0 && untilFire > -5.0 {
+                    suppressedBackupCheckInIDs.insert(item.checkInID)
+                    cancelNotificationsForCheckIn(checkInID: item.checkInID)
+                }
+            }
+        }
+
+        // Drop stale items well past their window
+        scheduledQueue.removeAll { item in
+            item.fireDate.addingTimeInterval(TimeInterval(item.captureSeconds + 180)) <= now
         }
 
         guard activeCaptureRequest == nil else { return }
 
-        if let idx = foregroundQueue.firstIndex(where: { $0.fireDate <= now && !firedCheckInIDs.contains($0.checkInID) }) {
-            let item = foregroundQueue.remove(at: idx)
+        if let idx = scheduledQueue.firstIndex(where: { $0.fireDate <= now && !firedCheckInIDs.contains($0.checkInID) }) {
+            let item = scheduledQueue.remove(at: idx)
             firedCheckInIDs.insert(item.checkInID)
-            cancelBurst(checkInID: item.checkInID)
 
-            let deadline = item.fireDate.addingTimeInterval(TimeInterval(item.captureSeconds))
-            let remaining = max(10, Int(ceil(deadline.timeIntervalSince(now))))
+            // Cancel backup banners if DailyOS is foreground OR PiP pill is actively alerting in solid RED
+            if FocusPiPManager.shared.isPiPActive || UIApplication.shared.applicationState == .active {
+                cancelNotificationsForCheckIn(checkInID: item.checkInID)
+            }
+
             activeCaptureRequest = ActivePhotoProofRequest(
                 id: item.checkInID,
                 taskID: item.taskID,
@@ -483,13 +564,13 @@ final class PhotoProofScheduler: ObservableObject {
                 isInitialCheck: item.isInitialCheck,
                 taskStart: item.taskStart,
                 taskEnd: item.taskEnd,
-                deadline: now.addingTimeInterval(TimeInterval(remaining))
+                deadline: now.addingTimeInterval(TimeInterval(item.captureSeconds))
             )
             UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
         }
     }
 
-    // MARK: - Notification Deep-Link & Foreground Handlers
+    // MARK: - Notification Tap Deep-Link Handler
 
     @discardableResult
     func handleNotificationInteraction(userInfo: [AnyHashable: Any]) -> Bool {
@@ -501,21 +582,15 @@ final class PhotoProofScheduler: ObservableObject {
         }
 
         firedCheckInIDs.insert(checkInID)
-        foregroundQueue.removeAll { $0.checkInID == checkInID }
-        cancelBurst(checkInID: checkInID)
+        scheduledQueue.removeAll { $0.checkInID == checkInID }
+        cancelNotificationsForCheckIn(checkInID: checkInID)
 
         let taskNotes = (userInfo["taskNotes"] as? String) ?? ""
         let isInitial = (userInfo["isInitialCheck"] as? Bool) ?? false
         let startTs = (userInfo["taskStartTimestamp"] as? Double) ?? Date().timeIntervalSince1970
         let endTs = (userInfo["taskEndTimestamp"] as? Double) ?? Date().addingTimeInterval(1800).timeIntervalSince1970
-        let deadlineTs = (userInfo["deadlineTimestamp"] as? Double) ?? Date().addingTimeInterval(TimeInterval(PhotoProofSettings.photoCaptureSeconds)).timeIntervalSince1970
-        let deadline = Date(timeIntervalSince1970: deadlineTs)
-
-        if deadline <= Date() {
-            PhotoProofLogStore.recordMissed(taskID: taskID)
-            logRevision += 1
-            return true
-        }
+        let captureSecs = PhotoProofSettings.photoCaptureSeconds
+        let freshDeadline = Date().addingTimeInterval(TimeInterval(captureSecs))
 
         if activeCaptureRequest?.id != checkInID {
             activeCaptureRequest = ActivePhotoProofRequest(
@@ -526,7 +601,7 @@ final class PhotoProofScheduler: ObservableObject {
                 isInitialCheck: isInitial,
                 taskStart: Date(timeIntervalSince1970: startTs),
                 taskEnd: Date(timeIntervalSince1970: endTs),
-                deadline: deadline
+                deadline: freshDeadline
             )
         }
         return true
@@ -534,50 +609,64 @@ final class PhotoProofScheduler: ObservableObject {
 
     // MARK: - Clean Cancellation Helpers
 
-    func cancelBurst(checkInID: String) {
+    func cancelNotificationsForCheckIn(checkInID: String) {
+        let marker = "_\(checkInID)_"
         center.getPendingNotificationRequests { [weak self] requests in
-            let ids = requests.map(\.identifier).filter { $0.contains("_\(checkInID)_p") }
+            let ids = requests.map(\.identifier).filter { $0.contains(marker) }
             if !ids.isEmpty {
                 self?.center.removePendingNotificationRequests(withIdentifiers: ids)
+            }
+        }
+        center.getDeliveredNotifications { [weak self] notifications in
+            let ids = notifications.map(\.request.identifier).filter { $0.contains(marker) }
+            if !ids.isEmpty {
+                self?.center.removeDeliveredNotifications(withIdentifiers: ids)
             }
         }
     }
 
     func cancelProofs(for taskID: String) {
-        foregroundQueue.removeAll { $0.taskID == taskID }
-        cancelPendingCheckIns(forTaskID: taskID, keepOnlyCheckInID: nil)
+        scheduledQueue.removeAll { $0.taskID == taskID }
+        cancelPendingCheckIns(forTaskID: taskID)
     }
 
-    private func cancelPendingCheckIns(forTaskID taskID: String, keepOnlyCheckInID: String?) {
+    private func cancelPendingCheckIns(forTaskID taskID: String) {
         let prefix = "\(Self.identifierPrefix)\(taskID)_"
         center.getPendingNotificationRequests { [weak self] requests in
-            let ids = requests.map(\.identifier).filter { id in
-                guard id.hasPrefix(prefix) else { return false }
-                if let keep = keepOnlyCheckInID, id.contains("_\(keep)_p") {
-                    return false
-                }
-                return true
-            }
+            let ids = requests.map(\.identifier).filter { $0.hasPrefix(prefix) }
             if !ids.isEmpty {
                 self?.center.removePendingNotificationRequests(withIdentifiers: ids)
+            }
+        }
+        center.getDeliveredNotifications { [weak self] notifications in
+            let ids = notifications.map(\.request.identifier).filter { $0.hasPrefix(prefix) }
+            if !ids.isEmpty {
+                self?.center.removeDeliveredNotifications(withIdentifiers: ids)
             }
         }
     }
 
     func cancelAllProofs() {
         activeCaptureRequest = nil
-        foregroundQueue.removeAll()
+        scheduledQueue.removeAll()
         firedCheckInIDs.removeAll()
+        suppressedBackupCheckInIDs.removeAll()
         center.getPendingNotificationRequests { [weak self] requests in
             let ids = requests.map(\.identifier).filter { $0.hasPrefix(Self.identifierPrefix) }
             if !ids.isEmpty {
                 self?.center.removePendingNotificationRequests(withIdentifiers: ids)
             }
         }
+        center.getDeliveredNotifications { [weak self] notifications in
+            let ids = notifications.map(\.request.identifier).filter { $0.hasPrefix(Self.identifierPrefix) }
+            if !ids.isEmpty {
+                self?.center.removeDeliveredNotifications(withIdentifiers: ids)
+            }
+        }
     }
 
     func markVerifiedAndDismiss(_ request: ActivePhotoProofRequest) {
-        cancelBurst(checkInID: request.id)
+        cancelNotificationsForCheckIn(checkInID: request.id)
         PhotoProofLogStore.recordVerified(taskID: request.taskID)
         logRevision += 1
         handleInitialPhotoSubmitted(for: request)
@@ -585,7 +674,7 @@ final class PhotoProofScheduler: ObservableObject {
     }
 
     func markMissedAndDismiss(_ request: ActivePhotoProofRequest) {
-        cancelBurst(checkInID: request.id)
+        cancelNotificationsForCheckIn(checkInID: request.id)
         PhotoProofLogStore.recordMissed(taskID: request.taskID)
         logRevision += 1
         activeCaptureRequest = nil

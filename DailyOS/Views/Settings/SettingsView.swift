@@ -1008,8 +1008,8 @@ struct SettingsView: View {
     }
 
     private var installedVersionDisplay: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.4.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "21"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.5.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "22"
         return "v\(short) (Build \(build))"
     }
 

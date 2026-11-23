@@ -2,13 +2,14 @@ import Foundation
 import Combine
 import UIKit
 
-/// Real-Time Wall-Clock Auto-Start Focus Engine + Active Deep Work Tracker + In-Sheet Completion Flow:
-/// - Automatically starts any scheduled timed `FocusTaskItem` or Google/Apple Calendar block at `startDate <= now < endDate`
-/// - Scheduled block ALWAYS progresses in real wall-clock time (never freezes when paused)
-/// - Calm Elapsed-of-Total Time (`0:42 / 45m` → `1m / 45m` → `35m / 45m` → `1h 05m / 1h 30m`) + `0% → 100%` ring
-/// - Play / Pause toggles `isTrackingDeepWork` to count genuine `activeDeepWorkSeconds` into Focused Today & Weekly Recap
-/// - Native Lock Screen Live Activity (`FocusLiveActivityManager`) with live iOS `timerInterval` + `pausedAt` (zero PiP)
-/// - Reliable automatic 2-min + interval/random Photo Proof arming (works with or without Gemini API key)
+/// Real-Time Wall-Clock Auto-Start Focus Engine + Active Deep Work Tracker + Automatic PiP Pill Driver:
+/// - Scheduled timed tasks (`startTime != nil`) and Google/Apple Calendar events AUTO-START and AUTO-PLAY
+///   (`isTrackingDeepWork = true`) at `startTime`, auto-open `FocusActiveTimerSheet` if foreground, clear
+///   remaining 20s start notifications, and arm `FocusPiPManager` automatically for swipe-away.
+/// - Self-started right-now tasks (Anytime / Quick Deep Work) start immediately with `isTrackingDeepWork = true`
+///   and NEVER fire 5m / 1m / 20s start notifications.
+/// - Main elapsed/total timer NEVER stops when paused — Play/Pause strictly toggles active deep work tracking.
+/// - Displays exact active minutes worked out of total block minutes (`38 / 45 min worked`) on completion.
 @MainActor
 final class FocusAutoSessionEngine: ObservableObject {
     static let shared = FocusAutoSessionEngine()
@@ -33,7 +34,12 @@ final class FocusAutoSessionEngine: ObservableObject {
 
     enum CompletionOverlayState: Equatable {
         case none
-        case completed(focusedMinutes: Int, completedTitle: String, nextUp: NextUpTaskInfo)
+        case completed(
+            activeWorkedMinutes: Int,
+            totalBlockMinutes: Int,
+            completedTitle: String,
+            nextUp: NextUpTaskInfo
+        )
     }
 
     @Published private(set) var activeSession: LiveSession? = nil
@@ -85,12 +91,19 @@ final class FocusAutoSessionEngine: ObservableObject {
         return max(60, Int(ceil(s.endDate.timeIntervalSince(s.startDate))))
     }
 
+    var totalBlockMinutes: Int {
+        max(1, Int(round(Double(totalBlockSeconds) / 60.0)))
+    }
+
     var elapsedSeconds: Int {
         guard activeSession != nil else { return 0 }
         return max(0, min(totalBlockSeconds, totalBlockSeconds - remainingSeconds))
     }
 
-    /// Smoothly fills from `0.0 → 1.0` across the session.
+    var elapsedMinutes: Int {
+        elapsedSeconds / 60
+    }
+
     var elapsedProgressFraction: Double {
         guard activeSession != nil, totalBlockSeconds > 0 else { return 0.0 }
         return max(0.0, min(1.0, Double(elapsedSeconds) / Double(totalBlockSeconds)))
@@ -112,7 +125,7 @@ final class FocusAutoSessionEngine: ObservableObject {
         activeSession?.requiresPhotoProof ?? adHocRequiresPhotoProof
     }
 
-    // MARK: - Explicit Controls
+    // MARK: - Explicit Controls (Play/Pause Strictly Toggles Active Work Tracking; Main Clock Never Stops!)
 
     func focusOnScheduledBlock(
         taskID: String,
@@ -122,7 +135,7 @@ final class FocusAutoSessionEngine: ObservableObject {
         startDate: Date,
         endDate: Date,
         requiresPhotoProof: Bool = false,
-        autoStartTracking: Bool = false,
+        autoStartTracking: Bool = true,
         openTimerSheet: Bool = true
     ) {
         completionOverlay = .none
@@ -149,9 +162,9 @@ final class FocusAutoSessionEngine: ObservableObject {
         remainingSeconds = max(0, Int(ceil(endDate.timeIntervalSinceNow)))
 
         if autoStartTracking {
-            setDeepWorkTracking(true)
+            setActiveTracking(true)
         } else {
-            syncLiveActivity()
+            syncLiveActivityAndPiP(armPiP: true)
         }
 
         if openTimerSheet {
@@ -159,6 +172,8 @@ final class FocusAutoSessionEngine: ObservableObject {
         }
     }
 
+    /// Self-started Right-Now task (Anytime task or Quick Deep Work):
+    /// Immediately starts & auto-plays with PiP armed, NEVER fires 5m/1m/20s start notifications.
     func startAdHocSession(
         title: String = "Deep Work",
         minutes: Int? = nil,
@@ -175,8 +190,6 @@ final class FocusAutoSessionEngine: ObservableObject {
         let id = taskID ?? "adhoc_\(Int(now.timeIntervalSince1970))"
         let proofEnabled = requiresPhotoProof ?? adHocRequiresPhotoProof
 
-        FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: id)
-
         activeSession = LiveSession(
             id: id,
             title: title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Deep Work" : title,
@@ -191,10 +204,24 @@ final class FocusAutoSessionEngine: ObservableObject {
         remainingSeconds = mins * 60
         activeDeepWorkSeconds = 0
         unloggedActiveSecondsRemainder = 0
-        setDeepWorkTracking(true)
+        isTrackingDeepWork = true
+
+        if proofEnabled {
+            PhotoProofScheduler.shared.scheduleProofs(
+                taskID: id,
+                taskTitle: activeSession?.title ?? "Deep Work",
+                taskNotes: taskNotes,
+                taskStart: now,
+                durationMinutes: mins,
+                triggerInitialImmediatelyIfNow: false
+            )
+        }
+
+        syncLiveActivityAndPiP(armPiP: true)
     }
 
-    func setDeepWorkTracking(_ active: Bool) {
+    /// Strictly toggles active deep work tracking (`isTrackingDeepWork`) — main elapsed/total clock NEVER stops!
+    func setActiveTracking(_ active: Bool) {
         if activeSession == nil && active {
             startAdHocSession(
                 minutes: adHocDurationMinutes,
@@ -208,9 +235,10 @@ final class FocusAutoSessionEngine: ObservableObject {
         isTrackingDeepWork = active
 
         if let session = activeSession {
-            FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: session.id)
+            if session.isScheduledWallClock {
+                FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: session.id)
+            }
 
-            // Arm 2-min + interval/random Photo Proof check-ins reliably on session start (works with or without Gemini key)
             if active && !wasTracking && session.requiresPhotoProof {
                 let minsLeft = max(5, Int(ceil(Double(remainingSeconds) / 60.0)))
                 PhotoProofScheduler.shared.scheduleProofs(
@@ -224,14 +252,14 @@ final class FocusAutoSessionEngine: ObservableObject {
             }
         }
 
-        syncLiveActivity()
+        syncLiveActivityAndPiP(armPiP: true)
     }
 
     func togglePlayPause() {
-        setDeepWorkTracking(!isTrackingDeepWork)
+        setActiveTracking(!isTrackingDeepWork)
     }
 
-    // MARK: - 1-Tap "Done" → In-Sheet "Good Job + Next Up" Celebration State
+    // MARK: - 1-Tap "Done" (or Natural Block End) → Exact Active / Total Worked Summary + Next Up
 
     func completeActiveTaskAndCelebrate() {
         guard let session = activeSession else { return }
@@ -247,13 +275,9 @@ final class FocusAutoSessionEngine: ObservableObject {
         if unloggedActiveSecondsRemainder >= 30 {
             HabitMetricsEngine.addFocusMinutesToday(1)
         }
-        let loggedActiveMins = max(
-            activeDeepWorkSeconds / 60 + (unloggedActiveSecondsRemainder >= 30 ? 1 : 0),
-            elapsedSeconds >= 60 ? (elapsedSeconds / 60) : 1
-        )
-        let displayedFocusedMins = activeDeepWorkSeconds >= 30
-            ? (activeDeepWorkSeconds / 60 + (unloggedActiveSecondsRemainder >= 30 ? 1 : 0))
-            : loggedActiveMins
+
+        let workedMinutes = activeDeepWorkSeconds / 60 + (unloggedActiveSecondsRemainder >= 30 ? 1 : 0)
+        let totalMins = totalBlockMinutes
 
         if activeDeepWorkSeconds >= 30 || elapsedSeconds >= 60 {
             HabitMetricsEngine.incrementFocusSessionsToday()
@@ -269,11 +293,21 @@ final class FocusAutoSessionEngine: ObservableObject {
         activeDeepWorkSeconds = 0
         unloggedActiveSecondsRemainder = 0
         FocusLiveActivityManager.shared.endAll()
+        FocusPiPManager.shared.stopAndDisarmPiP()
 
         completionOverlay = .completed(
-            focusedMinutes: max(1, displayedFocusedMins),
+            activeWorkedMinutes: min(totalMins, max(0, workedMinutes)),
+            totalBlockMinutes: totalMins,
             completedTitle: session.title,
             nextUp: nextUp
+        )
+
+        // Immediately reschedule remaining upcoming scheduled start notifications
+        let todayKey = HabitItem.dateKey()
+        let tasks = SharedModelContainer.shared.fetchFocusTasks(dayKey: todayKey)
+        FocusNudgeScheduler.shared.rescheduleUpcomingNudges(
+            tasks: tasks,
+            calendarBlocks: FocusAccountabilityManager.shared.upcomingBlocks
         )
 
         UINotificationFeedbackGenerator().notificationOccurred(.success)
@@ -286,6 +320,7 @@ final class FocusAutoSessionEngine: ObservableObject {
     func endCurrentSession(markDismissedIfScheduled: Bool = true) {
         if let session = activeSession {
             PhotoProofScheduler.shared.cancelProofs(for: session.id)
+            FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: session.id)
             if markDismissedIfScheduled && session.isScheduledWallClock {
                 dismissedScheduledIDs.insert(session.id)
             }
@@ -302,6 +337,7 @@ final class FocusAutoSessionEngine: ObservableObject {
         activeDeepWorkSeconds = 0
         unloggedActiveSecondsRemainder = 0
         FocusLiveActivityManager.shared.endAll()
+        FocusPiPManager.shared.stopAndDisarmPiP()
     }
 
     // MARK: - Live Next-Up Task Discovery
@@ -349,7 +385,7 @@ final class FocusAutoSessionEngine: ObservableObject {
 
             return NextUpTaskInfo(
                 headline: "Next: \(next.title) • \(timingText)",
-                subtitle: "5-min heads-up armed before start",
+                subtitle: "5-min & 1-min reminders armed",
                 isAllClear: false,
                 nextStartDate: next.startDate
             )
@@ -389,7 +425,7 @@ final class FocusAutoSessionEngine: ObservableObject {
         }
     }
 
-    // MARK: - Wall-Clock Auto-Start Discovery
+    // MARK: - Wall-Clock Auto-Start + Auto-Play Discovery (Scheduled Timed Tasks & Calendar Events)
 
     func evaluateAutoStartSchedule() {
         FocusLiveActivityManager.shared.endStaleActivitiesIfNeeded()
@@ -406,6 +442,10 @@ final class FocusAutoSessionEngine: ObservableObject {
         }
 
         if let current = activeSession, current.endDate > now {
+            // If user opened DailyOS while this scheduled task is active, clear remaining 20s start notifications immediately
+            if current.isScheduledWallClock && UIApplication.shared.applicationState == .active {
+                FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: current.id)
+            }
             return
         }
 
@@ -417,35 +457,16 @@ final class FocusAutoSessionEngine: ObservableObject {
             let id = task.id.uuidString
             guard !dismissedScheduledIDs.contains(id) else { continue }
 
-            completionOverlay = .none
-            activeSession = LiveSession(
+            autoLaunchScheduledSession(
                 id: id,
                 title: task.title,
                 cue: task.trimmedLocation.isEmpty ? task.trimmedNotes : "at \(task.trimmedLocation)",
+                taskNotes: task.notes,
                 startDate: start,
                 endDate: end,
-                isScheduledWallClock: true,
                 requiresPhotoProof: task.requiresPhotoProof,
-                taskNotes: task.notes
+                photoTaskID: id
             )
-            editableCue = activeSession?.cue ?? ""
-            remainingSeconds = max(0, Int(ceil(end.timeIntervalSince(now))))
-            activeDeepWorkSeconds = 0
-            unloggedActiveSecondsRemainder = 0
-            isTrackingDeepWork = false
-            syncLiveActivity()
-
-            if task.requiresPhotoProof {
-                let minsLeft = max(5, Int(ceil(end.timeIntervalSince(now) / 60.0)))
-                PhotoProofScheduler.shared.scheduleProofs(
-                    taskID: id,
-                    taskTitle: task.title,
-                    taskNotes: task.notes,
-                    taskStart: now,
-                    durationMinutes: minsLeft,
-                    triggerInitialImmediatelyIfNow: false
-                )
-            }
             return
         }
 
@@ -458,56 +479,88 @@ final class FocusAutoSessionEngine: ObservableObject {
             guard block.startDate <= now && now < block.endDate else { continue }
             guard !dismissedScheduledIDs.contains(block.id) else { continue }
 
-            completionOverlay = .none
             let calProofKey = CalendarPhotoProofStore.stableKey(for: block)
             let proofEnabled = CalendarPhotoProofStore.isEnabled(forKey: calProofKey)
-            activeSession = LiveSession(
+            autoLaunchScheduledSession(
                 id: block.id,
                 title: block.title,
                 cue: block.trimmedLocation.isEmpty ? block.notes : "at \(block.trimmedLocation)",
+                taskNotes: block.notes,
                 startDate: block.startDate,
                 endDate: block.endDate,
-                isScheduledWallClock: true,
                 requiresPhotoProof: proofEnabled,
-                taskNotes: block.notes
+                photoTaskID: calProofKey
             )
-            editableCue = activeSession?.cue ?? ""
-            remainingSeconds = max(0, Int(ceil(block.endDate.timeIntervalSince(now))))
-            activeDeepWorkSeconds = 0
-            unloggedActiveSecondsRemainder = 0
-            isTrackingDeepWork = false
-            syncLiveActivity()
-
-            if proofEnabled {
-                let minsLeft = max(5, Int(ceil(block.endDate.timeIntervalSince(now) / 60.0)))
-                PhotoProofScheduler.shared.scheduleProofs(
-                    taskID: calProofKey,
-                    taskTitle: block.title,
-                    taskNotes: block.notes,
-                    taskStart: now,
-                    durationMinutes: minsLeft,
-                    triggerInitialImmediatelyIfNow: false
-                )
-            }
             return
         }
     }
 
-    // MARK: - 1-Second Heartbeat
+    private func autoLaunchScheduledSession(
+        id: String,
+        title: String,
+        cue: String,
+        taskNotes: String,
+        startDate: Date,
+        endDate: Date,
+        requiresPhotoProof: Bool,
+        photoTaskID: String
+    ) {
+        let now = Date()
+        completionOverlay = .none
+        FocusNudgeScheduler.shared.acknowledgeAndClear(taskID: id)
+
+        activeSession = LiveSession(
+            id: id,
+            title: title,
+            cue: cue,
+            startDate: startDate,
+            endDate: endDate,
+            isScheduledWallClock: true,
+            requiresPhotoProof: requiresPhotoProof,
+            taskNotes: taskNotes
+        )
+        editableCue = cue
+        remainingSeconds = max(0, Int(ceil(endDate.timeIntervalSince(now))))
+        activeDeepWorkSeconds = 0
+        unloggedActiveSecondsRemainder = 0
+
+        // Auto-press Play immediately so active deep work tracking begins right away!
+        isTrackingDeepWork = true
+
+        // If DailyOS is open in foreground, auto-present FocusActiveTimerSheet immediately
+        if UIApplication.shared.applicationState == .active {
+            shouldPresentTimerSheet = true
+        }
+
+        // Arm PiP immediately so swiping away pops up the minimalistic pill seamlessly
+        syncLiveActivityAndPiP(armPiP: true)
+
+        if requiresPhotoProof {
+            let minsLeft = max(5, Int(ceil(endDate.timeIntervalSince(now) / 60.0)))
+            PhotoProofScheduler.shared.scheduleProofs(
+                taskID: photoTaskID,
+                taskTitle: title,
+                taskNotes: taskNotes,
+                taskStart: now,
+                durationMinutes: minsLeft,
+                triggerInitialImmediatelyIfNow: false
+            )
+        }
+    }
+
+    // MARK: - 1-Second Heartbeat (Real-Time Wall Clock NEVER Stops + Active Work Tracking + PiP Pill Feed)
 
     private func handleSecondTick() {
         evaluateAutoStartSchedule()
-        PhotoProofScheduler.shared.evaluateForegroundCheckIns()
+        PhotoProofScheduler.shared.evaluateScheduledCheckIns()
 
         guard let session = activeSession else { return }
         let now = Date()
 
-        if session.isScheduledWallClock {
-            remainingSeconds = max(0, Int(ceil(session.endDate.timeIntervalSince(now))))
-        } else if isTrackingDeepWork {
-            remainingSeconds = max(0, remainingSeconds - 1)
-        }
+        // Main elapsed/total timer NEVER stops when paused (both scheduled & self-started!)
+        remainingSeconds = max(0, Int(ceil(session.endDate.timeIntervalSince(now))))
 
+        // Accumulate genuine Active Deep Work seconds ONLY while Play/Active is ON
         if isTrackingDeepWork {
             activeDeepWorkSeconds += 1
             unloggedActiveSecondsRemainder += 1
@@ -518,25 +571,49 @@ final class FocusAutoSessionEngine: ObservableObject {
             }
         }
 
+        // Keep Floating PiP Pill frame snapshot fresh (normal `2 / 180` OR solid RED ringing bell `30..0`)
+        FocusPiPManager.shared.updateSnapshot(makePiPSnapshot(for: session))
+
         if remainingSeconds <= 0 {
             completeActiveTaskAndCelebrate()
         }
     }
 
-    private func syncLiveActivity() {
+    private func makePiPSnapshot(for session: LiveSession) -> FocusPiPManager.PillSnapshot {
+        let fixedMins: Int? = session.requiresPhotoProof
+            ? PhotoProofScheduler.shared.fixedIntervalMinutesUntilNextPhoto(for: session.id)
+            : nil
+        return FocusPiPManager.PillSnapshot(
+            elapsedMinutes: elapsedMinutes,
+            totalMinutes: totalBlockMinutes,
+            progressFraction: elapsedProgressFraction,
+            isActiveDeepWork: isTrackingDeepWork,
+            fixedIntervalMinutesUntilNextPhoto: fixedMins,
+            activePhotoCountdownSeconds: PhotoProofScheduler.shared.activeCheckInRemainingSeconds
+        )
+    }
+
+    private func syncLiveActivityAndPiP(armPiP: Bool) {
         guard let session = activeSession else {
             FocusLiveActivityManager.shared.endAll()
+            FocusPiPManager.shared.stopAndDisarmPiP()
             return
         }
 
-        let pausedOnLockScreen = !session.isScheduledWallClock && !isTrackingDeepWork
+        let snap = makePiPSnapshot(for: session)
+        if armPiP {
+            FocusPiPManager.shared.armAndWarmPiP(with: snap)
+        } else {
+            FocusPiPManager.shared.updateSnapshot(snap)
+        }
+
         FocusLiveActivityManager.shared.start(
             taskTitle: session.title,
             focusCue: editableCue.isEmpty ? session.cue : editableCue,
             timeWindowLabel: sessionTimeWindowLabel,
             durationSeconds: totalBlockSeconds,
             elapsedSeconds: elapsedSeconds,
-            isPaused: pausedOnLockScreen
+            isPaused: !isTrackingDeepWork
         )
     }
 }

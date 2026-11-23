@@ -261,18 +261,29 @@ struct FocusTabView: View {
 
                         ForEach(Array(timedTasks.enumerated()), id: \.element.id) { idx, task in
                             let _ = photoProofScheduler.logRevision
+                            let isLive = sessionEngine.activeSession?.id == task.id.uuidString
                             FocusTaskCardRow(
                                 task: task,
-                                isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
+                                isLiveNow: isLive,
+                                showPlayButton: false,
                                 proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
                                 onToggleComplete: { toggleTaskCompletion(task) },
-                                onTapEdit: { editingTask = task },
+                                onTapCard: {
+                                    if isLive {
+                                        sessionEngine.shouldPresentTimerSheet = true
+                                    } else {
+                                        editingTask = task
+                                    }
+                                },
                                 onTogglePhotoProof: { togglePhotoProof(for: task) },
                                 onPlayTimer: { launchTimer(for: task) }
                             )
                             .staggeredEntrance(index: idx)
                             .transition(.dailyCardSpring)
                             .contextMenu {
+                                Button { editingTask = task } label: {
+                                    Label("Edit Task", systemImage: "pencil")
+                                }
                                 Button { moveTaskToTomorrow(task) } label: {
                                     Label("Move to Tomorrow", systemImage: "arrow.right.circle")
                                 }
@@ -300,20 +311,23 @@ struct FocusTabView: View {
                             let isOptedIn = CalendarPhotoProofStore.isEnabled(forKey: calKey)
                             let isDone = calendarCompletions.isCompleted(eventKey: completionKey)
 
+                            let isLiveBlock = sessionEngine.activeSession?.id == block.id || focusManager.activeFocusBlock?.id == block.id
                             SyncedFocusBlockRow(
                                 block: block,
-                                isCurrent: sessionEngine.activeSession?.id == block.id || focusManager.activeFocusBlock?.id == block.id,
+                                isCurrent: isLiveBlock,
                                 isCompleted: isDone,
                                 isPhotoProofEnabled: isOptedIn,
                                 proofRecord: PhotoProofLogStore.record(for: calKey),
                                 onToggleComplete: {
                                     toggleSyncedBlockCompletion(block, calKey: calKey, completionKey: completionKey)
                                 },
+                                onTapCard: {
+                                    if isLiveBlock {
+                                        sessionEngine.shouldPresentTimerSheet = true
+                                    }
+                                },
                                 onTogglePhotoProof: {
                                     toggleCalendarPhotoProof(for: block, key: calKey, currentlyEnabled: isOptedIn)
-                                },
-                                onPlayTimer: {
-                                    launchTimer(for: block, calKey: calKey, isOptedIn: isOptedIn)
                                 }
                             )
                             .staggeredEntrance(index: idx)
@@ -348,12 +362,20 @@ struct FocusTabView: View {
 
                         ForEach(Array(anytimeTasks.enumerated()), id: \.element.id) { idx, task in
                             let _ = photoProofScheduler.logRevision
+                            let isLive = sessionEngine.activeSession?.id == task.id.uuidString
                             FocusTaskCardRow(
                                 task: task,
-                                isLiveNow: sessionEngine.activeSession?.id == task.id.uuidString,
+                                isLiveNow: isLive,
+                                showPlayButton: true,
                                 proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
                                 onToggleComplete: { toggleTaskCompletion(task) },
-                                onTapEdit: { editingTask = task },
+                                onTapCard: {
+                                    if isLive {
+                                        sessionEngine.shouldPresentTimerSheet = true
+                                    } else {
+                                        editingTask = task
+                                    }
+                                },
                                 onTogglePhotoProof: { togglePhotoProof(for: task) },
                                 onPlayTimer: { launchTimer(for: task) }
                             )
@@ -1066,9 +1088,10 @@ struct FocusTabView: View {
 private struct FocusTaskCardRow: View {
     let task: FocusTaskItem
     let isLiveNow: Bool
+    let showPlayButton: Bool
     let proofRecord: PhotoProofTaskRecord?
     let onToggleComplete: () -> Void
-    let onTapEdit: () -> Void
+    let onTapCard: () -> Void
     let onTogglePhotoProof: () -> Void
     let onPlayTimer: () -> Void
 
@@ -1113,7 +1136,7 @@ private struct FocusTaskCardRow: View {
             .buttonStyle(MidnightPressButtonStyle())
 
             // Center: Bold Title + Time/Duration Pill + Optional Location + Proof Status
-            Button(action: onTapEdit) {
+            Button(action: onTapCard) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(spacing: 6) {
                         if isLiveNow && !task.isCompleted {
@@ -1180,7 +1203,7 @@ private struct FocusTaskCardRow: View {
             }
             .buttonStyle(.plain)
 
-            // Right: 1-Tap Camera Photo-Proof Toggle Pill + Play Button
+            // Right: 1-Tap Camera Photo-Proof Toggle Pill (Play Button ONLY on Self-Started Anytime Tasks!)
             HStack(spacing: 7) {
                 Button(action: onTogglePhotoProof) {
                     Image(systemName: task.requiresPhotoProof ? "camera.fill" : "camera")
@@ -1202,27 +1225,29 @@ private struct FocusTaskCardRow: View {
                 .buttonStyle(MidnightPressButtonStyle())
                 .accessibilityLabel(task.requiresPhotoProof ? "Disable Photo Proof" : "Enable Photo Proof")
 
-                Button(action: onPlayTimer) {
-                    Image(systemName: isLiveNow ? "waveform" : "play.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : (isLiveNow ? DailyOSTheme.emerald : DailyOSTheme.skyGlow))
-                        .frame(width: 34, height: 34)
-                        .background(
-                            (task.isCompleted
-                             ? DailyOSTheme.inputSurface
-                             : (isLiveNow ? DailyOSTheme.emerald.opacity(0.18) : DailyOSTheme.skyGlow.opacity(0.16))),
-                            in: Circle()
-                        )
-                        .overlay(
-                            Circle().stroke(
-                                task.isCompleted
-                                ? DailyOSTheme.hairline
-                                : (isLiveNow ? DailyOSTheme.emerald.opacity(0.5) : DailyOSTheme.skyGlow.opacity(0.35)),
-                                lineWidth: 1
+                if showPlayButton {
+                    Button(action: onPlayTimer) {
+                        Image(systemName: isLiveNow ? "waveform" : "play.fill")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : (isLiveNow ? DailyOSTheme.emerald : DailyOSTheme.skyGlow))
+                            .frame(width: 34, height: 34)
+                            .background(
+                                (task.isCompleted
+                                 ? DailyOSTheme.inputSurface
+                                 : (isLiveNow ? DailyOSTheme.emerald.opacity(0.18) : DailyOSTheme.skyGlow.opacity(0.16))),
+                                in: Circle()
                             )
-                        )
+                            .overlay(
+                                Circle().stroke(
+                                    task.isCompleted
+                                    ? DailyOSTheme.hairline
+                                    : (isLiveNow ? DailyOSTheme.emerald.opacity(0.5) : DailyOSTheme.skyGlow.opacity(0.35)),
+                                    lineWidth: 1
+                                )
+                            )
+                    }
+                    .buttonStyle(MidnightPressButtonStyle())
                 }
-                .buttonStyle(MidnightPressButtonStyle())
             }
         }
         .padding(14)
@@ -1274,8 +1299,8 @@ private struct SyncedFocusBlockRow: View {
     let isPhotoProofEnabled: Bool
     let proofRecord: PhotoProofTaskRecord?
     let onToggleComplete: () -> Void
+    let onTapCard: () -> Void
     let onTogglePhotoProof: () -> Void
-    let onPlayTimer: () -> Void
 
     @State private var burstTrigger: Int = 0
     @State private var pulseLiveDot: Bool = false
@@ -1327,108 +1352,99 @@ private struct SyncedFocusBlockRow: View {
             }
             .buttonStyle(MidnightPressButtonStyle())
 
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    if isCurrent && !isCompleted {
-                        Circle()
-                            .fill(DailyOSTheme.emerald)
-                            .frame(width: 7, height: 7)
-                            .scaleEffect(pulseLiveDot ? 1.28 : 0.85)
-                            .opacity(pulseLiveDot ? 1.0 : 0.55)
-                            .shadow(color: DailyOSTheme.emerald.opacity(0.85), radius: 4)
-                            .onAppear {
-                                withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
-                                    pulseLiveDot = true
+            Button(action: onTapCard) {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        if isCurrent && !isCompleted {
+                            Circle()
+                                .fill(DailyOSTheme.emerald)
+                                .frame(width: 7, height: 7)
+                                .scaleEffect(pulseLiveDot ? 1.28 : 0.85)
+                                .opacity(pulseLiveDot ? 1.0 : 0.55)
+                                .shadow(color: DailyOSTheme.emerald.opacity(0.85), radius: 4)
+                                .onAppear {
+                                    withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                                        pulseLiveDot = true
+                                    }
                                 }
-                            }
+                        }
+
+                        Text(block.title)
+                            .font(.system(size: 15, weight: .bold, design: .rounded))
+                            .strikethrough(isCompleted, color: DailyOSTheme.eyebrow)
+                            .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : Color.white)
+                            .lineLimit(2)
                     }
 
-                    Text(block.title)
-                        .font(.system(size: 15, weight: .bold, design: .rounded))
-                        .strikethrough(isCompleted, color: DailyOSTheme.eyebrow)
-                        .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : Color.white)
-                        .lineLimit(2)
-                }
-
-                HStack(spacing: 6) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 10, weight: .bold))
-                        Text(block.formattedTimeAndDuration)
-                            .font(.system(size: 11, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : sourceColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(
-                        (isCompleted ? DailyOSTheme.eyebrow : sourceColor).opacity(0.14),
-                        in: Capsule()
-                    )
-
-                    if !block.trimmedLocation.isEmpty {
+                    HStack(spacing: 6) {
                         HStack(spacing: 4) {
-                            Image(systemName: "mappin.and.ellipse")
+                            Image(systemName: "clock")
                                 .font(.system(size: 10, weight: .bold))
-                            Text(block.trimmedLocation)
+                            Text(block.formattedTimeAndDuration)
                                 .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                .monospacedDigit()
                                 .lineLimit(1)
                         }
-                        .foregroundStyle(Color.white.opacity(isCompleted ? 0.45 : 0.82))
+                        .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : sourceColor)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(DailyOSTheme.inputSurface, in: Capsule())
-                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
-                    }
-
-                    Text(compactSourceTag)
-                        .font(.system(size: 10, weight: .bold, design: .rounded))
-                        .foregroundStyle(DailyOSTheme.eyebrow)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 3)
-                        .background(DailyOSTheme.inputSurface, in: Capsule())
-                        .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
-
-                    if isPhotoProofEnabled {
-                        PhotoProofStatusBadge(record: proofRecord)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            HStack(spacing: 7) {
-                Button(action: onTogglePhotoProof) {
-                    Image(systemName: isPhotoProofEnabled ? "camera.fill" : "camera")
-                        .font(.system(size: 12, weight: .semibold))
-                        .symbolEffect(.bounce, value: isPhotoProofEnabled)
-                        .foregroundStyle(isPhotoProofEnabled ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
-                        .frame(width: 32, height: 32)
                         .background(
-                            isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
-                            in: Circle()
+                            (isCompleted ? DailyOSTheme.eyebrow : sourceColor).opacity(0.14),
+                            in: Capsule()
                         )
-                        .overlay(
-                            Circle().stroke(
-                                isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
-                                lineWidth: 1
-                            )
-                        )
-                }
-                .buttonStyle(MidnightPressButtonStyle())
 
-                Button(action: onPlayTimer) {
-                    Image(systemName: isCurrent ? "waveform" : "play.fill")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(isCompleted ? DailyOSTheme.eyebrow : (isCurrent ? DailyOSTheme.emerald : sourceColor))
-                        .frame(width: 34, height: 34)
-                        .background(
-                            (isCompleted ? DailyOSTheme.inputSurface : (isCurrent ? DailyOSTheme.emerald.opacity(0.18) : sourceColor.opacity(0.15))),
-                            in: Circle()
-                        )
+                        if !block.trimmedLocation.isEmpty {
+                            HStack(spacing: 4) {
+                                Image(systemName: "mappin.and.ellipse")
+                                    .font(.system(size: 10, weight: .bold))
+                                Text(block.trimmedLocation)
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(Color.white.opacity(isCompleted ? 0.45 : 0.82))
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(DailyOSTheme.inputSurface, in: Capsule())
+                            .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+                        }
+
+                        Text(compactSourceTag)
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(DailyOSTheme.eyebrow)
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(DailyOSTheme.inputSurface, in: Capsule())
+                            .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
+
+                        if isPhotoProofEnabled {
+                            PhotoProofStatusBadge(record: proofRecord)
+                        }
+                    }
                 }
-                .buttonStyle(MidnightPressButtonStyle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+
+            // Right: Compact 1-Tap Camera Photo-Proof Toggle Pill ONLY (No Start Button — Auto-Starts!)
+            Button(action: onTogglePhotoProof) {
+                Image(systemName: isPhotoProofEnabled ? "camera.fill" : "camera")
+                    .font(.system(size: 12, weight: .semibold))
+                    .symbolEffect(.bounce, value: isPhotoProofEnabled)
+                    .foregroundStyle(isPhotoProofEnabled ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
+                    .frame(width: 32, height: 32)
+                    .background(
+                        isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
+                        in: Circle()
+                    )
+                    .overlay(
+                        Circle().stroke(
+                            isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
+                            lineWidth: 1
+                        )
+                    )
+            }
+            .buttonStyle(MidnightPressButtonStyle())
         }
         .padding(14)
         .ambientCard(
@@ -1499,9 +1515,9 @@ struct FocusActiveTimerSheet: View {
 
                 Spacer()
 
-                // Main Centerpiece: "Good Job!" + Next Up Celebration OR Glowing Elapsed-of-Total Ring
+                // Main Centerpiece: "Good Job!" + Active/Total Worked + Next Up OR Glowing Elapsed-of-Total Ring
                 switch sessionEngine.completionOverlay {
-                case .completed(let focusedMins, let completedTitle, let nextUp):
+                case .completed(let workedMins, let totalMins, let completedTitle, let nextUp):
                     VStack(spacing: 18) {
                         ZStack {
                             OrganicBreathingAura(color: DailyOSTheme.emerald, diameter: 250)
@@ -1520,7 +1536,7 @@ struct FocusActiveTimerSheet: View {
                                 .font(.system(size: 30, weight: .black, design: .rounded))
                                 .foregroundStyle(Color.white)
 
-                            Text("\(focusedMins)m focused")
+                            Text("\(workedMins) / \(totalMins) min worked")
                                 .font(.system(size: 17, weight: .bold, design: .rounded))
                                 .monospacedDigit()
                                 .foregroundStyle(DailyOSTheme.emerald)
