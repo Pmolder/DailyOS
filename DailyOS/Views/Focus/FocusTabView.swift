@@ -51,6 +51,15 @@ final class DeepWorkTimerController: ObservableObject {
         activeTaskID = taskID
         isRunning = autoStart
         isPaused = false
+        if autoStart {
+            FocusLiveActivityManager.shared.start(
+                taskTitle: sessionTitle,
+                focusCue: cueSubtitle,
+                durationSeconds: remainingSeconds
+            )
+        } else {
+            FocusLiveActivityManager.shared.endAll()
+        }
     }
 
     func start() {
@@ -59,6 +68,11 @@ final class DeepWorkTimerController: ObservableObject {
         }
         isRunning = true
         isPaused = false
+        FocusLiveActivityManager.shared.start(
+            taskTitle: sessionTitle,
+            focusCue: cueSubtitle,
+            durationSeconds: remainingSeconds
+        )
     }
 
     func togglePause() {
@@ -68,6 +82,11 @@ final class DeepWorkTimerController: ObservableObject {
         }
         isPaused.toggle()
         isRunning = !isPaused
+        FocusLiveActivityManager.shared.update(
+            isPaused: isPaused,
+            remainingSeconds: remainingSeconds,
+            totalDurationSeconds: totalSeconds
+        )
     }
 
     @discardableResult
@@ -76,6 +95,7 @@ final class DeepWorkTimerController: ObservableObject {
         isRunning = false
         isPaused = false
         remainingSeconds = totalMinutes * 60
+        FocusLiveActivityManager.shared.endAll()
 
         if logged > 0 {
             HabitMetricsEngine.addFocusMinutesToday(logged)
@@ -96,6 +116,7 @@ final class DeepWorkTimerController: ObservableObject {
             let mins = totalMinutes
             isRunning = false
             isPaused = false
+            FocusLiveActivityManager.shared.endAll()
             HabitMetricsEngine.addFocusMinutesToday(mins)
             HabitMetricsEngine.incrementFocusSessionsToday()
             WidgetSyncCoordinator.syncSnapshotFromStore()
@@ -119,6 +140,7 @@ struct FocusTabView: View {
 
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
     @ObservedObject private var timerController = DeepWorkTimerController.shared
+    @ObservedObject private var photoProofScheduler = PhotoProofScheduler.shared
 
     @State private var viewMode: FocusViewMode = .day
     @State private var selectedDate: Date = ISOWeekCalendar.current.startOfDay(for: Date())
@@ -196,14 +218,16 @@ struct FocusTabView: View {
                     if timerController.isActive {
                         activeTimerPillBanner
                             .padding(.horizontal, 18)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(.midnightReveal)
                     }
 
                     // 3. Main Content: Day View vs Week Overview
                     if viewMode == .day {
                         dayModeContent
+                            .transition(.midnightReveal)
                     } else {
                         weekModeContent
+                            .transition(.midnightReveal)
                     }
                 }
             }
@@ -352,13 +376,18 @@ struct FocusTabView: View {
                     if !dayTasks.isEmpty {
                         Section {
                             ForEach(dayTasks) { task in
+                                let _ = photoProofScheduler.logRevision
                                 FocusTaskCardRow(
                                     task: task,
+                                    proofRecord: PhotoProofLogStore.record(for: task.id.uuidString),
                                     onToggleComplete: {
                                         toggleTaskCompletion(task)
                                     },
                                     onTapEdit: {
                                         editingTask = task
+                                    },
+                                    onTogglePhotoProof: {
+                                        togglePhotoProof(for: task)
                                     },
                                     onPlayTimer: {
                                         launchTimer(for: task)
@@ -404,15 +433,34 @@ struct FocusTabView: View {
                     if !daySynced.isEmpty {
                         Section {
                             ForEach(daySynced) { block in
+                                let _ = photoProofScheduler.logRevision
+                                let calKey = CalendarPhotoProofStore.stableKey(for: block)
+                                let isOptedIn = CalendarPhotoProofStore.isEnabled(forKey: calKey)
                                 SyncedFocusBlockRow(
                                     block: block,
                                     isCurrent: focusManager.activeFocusBlock?.id == block.id,
+                                    isPhotoProofEnabled: isOptedIn,
+                                    proofRecord: PhotoProofLogStore.record(for: calKey),
+                                    onTogglePhotoProof: {
+                                        toggleCalendarPhotoProof(for: block, key: calKey, currentlyEnabled: isOptedIn)
+                                    },
                                     onPlayTimer: {
+                                        let mins = max(15, Int(round(block.durationMinutes)))
                                         timerController.prepare(
                                             title: block.title,
-                                            minutes: max(15, Int(round(block.durationMinutes))),
+                                            minutes: mins,
                                             autoStart: true
                                         )
+                                        if isOptedIn {
+                                            PhotoProofScheduler.shared.scheduleProofs(
+                                                taskID: calKey,
+                                                taskTitle: block.title,
+                                                taskNotes: block.notes,
+                                                taskStart: Date(),
+                                                durationMinutes: mins,
+                                                triggerInitialImmediatelyIfNow: true
+                                            )
+                                        }
                                         showingDeepWorkSheet = true
                                     }
                                 )
@@ -808,12 +856,59 @@ struct FocusTabView: View {
 
     private func toggleTaskCompletion(_ task: FocusTaskItem) {
         task.isCompleted.toggle()
-        try? modelContext.save()
-        SharedModelContainer.shared.save()
         if task.isCompleted {
+            PhotoProofScheduler.shared.cancelProofs(for: task.id.uuidString)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
         } else {
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+        try? modelContext.save()
+        SharedModelContainer.shared.save()
+    }
+
+    private func togglePhotoProof(for task: FocusTaskItem) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        task.requiresPhotoProof.toggle()
+        try? modelContext.save()
+        SharedModelContainer.shared.save()
+
+        let taskID = task.id.uuidString
+        if task.requiresPhotoProof {
+            if let scheduledStart = task.startTime {
+                PhotoProofScheduler.shared.scheduleProofs(
+                    taskID: taskID,
+                    taskTitle: task.title,
+                    taskNotes: task.notes,
+                    taskStart: scheduledStart,
+                    durationMinutes: task.durationMinutes
+                )
+            } else {
+                PhotoProofLogStore.markArmed(taskID: taskID)
+                photoProofScheduler.logRevision += 1
+            }
+        } else {
+            PhotoProofScheduler.shared.cancelProofs(for: taskID)
+            PhotoProofLogStore.clearRecord(for: taskID)
+            photoProofScheduler.logRevision += 1
+        }
+    }
+
+    private func toggleCalendarPhotoProof(for block: FocusBlockDisplayItem, key: String, currentlyEnabled: Bool) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        let next = !currentlyEnabled
+        CalendarPhotoProofStore.setEnabled(next, forKey: key)
+        if next {
+            PhotoProofScheduler.shared.scheduleProofs(
+                taskID: key,
+                taskTitle: block.title,
+                taskNotes: block.notes,
+                taskStart: block.startDate,
+                durationMinutes: max(5, Int(round(block.durationMinutes)))
+            )
+        } else {
+            PhotoProofScheduler.shared.cancelProofs(for: key)
+            PhotoProofLogStore.clearRecord(for: key)
+            photoProofScheduler.logRevision += 1
         }
     }
 
@@ -824,6 +919,15 @@ struct FocusTabView: View {
             if let oldStart = task.startTime,
                let shiftedStart = cal.date(byAdding: .day, value: 1, to: oldStart) {
                 task.startTime = shiftedStart
+                if task.requiresPhotoProof {
+                    PhotoProofScheduler.shared.scheduleProofs(
+                        taskID: task.id.uuidString,
+                        taskTitle: task.title,
+                        taskNotes: task.notes,
+                        taskStart: shiftedStart,
+                        durationMinutes: task.durationMinutes
+                    )
+                }
             }
             try? modelContext.save()
             SharedModelContainer.shared.save()
@@ -832,6 +936,8 @@ struct FocusTabView: View {
     }
 
     private func deleteTask(_ task: FocusTaskItem) {
+        PhotoProofScheduler.shared.cancelProofs(for: task.id.uuidString)
+        PhotoProofLogStore.clearRecord(for: task.id.uuidString)
         modelContext.delete(task)
         try? modelContext.save()
         SharedModelContainer.shared.save()
@@ -847,6 +953,16 @@ struct FocusTabView: View {
             taskID: task.id,
             autoStart: true
         )
+        if task.requiresPhotoProof {
+            PhotoProofScheduler.shared.scheduleProofs(
+                taskID: task.id.uuidString,
+                taskTitle: task.title,
+                taskNotes: task.notes,
+                taskStart: Date(),
+                durationMinutes: task.durationMinutes,
+                triggerInitialImmediatelyIfNow: true
+            )
+        }
         showingDeepWorkSheet = true
     }
 
@@ -920,12 +1036,14 @@ struct FocusTabView: View {
 
 private struct FocusTaskCardRow: View {
     let task: FocusTaskItem
+    let proofRecord: PhotoProofTaskRecord?
     let onToggleComplete: () -> Void
     let onTapEdit: () -> Void
+    let onTogglePhotoProof: () -> Void
     let onPlayTimer: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 11) {
             // Left: One-Tap Completion Check Circle
             Button(action: onToggleComplete) {
                 ZStack {
@@ -943,9 +1061,9 @@ private struct FocusTaskCardRow: View {
                     }
                 }
             }
-            .buttonStyle(.plain)
+            .buttonStyle(MidnightPressStyle())
 
-            // Center: Bold Title + Time/Duration Pill + Place Pill
+            // Center: Bold Title + Time/Duration Pill + Place Pill + Proof Status Chip
             Button(action: onTapEdit) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(task.title)
@@ -956,7 +1074,6 @@ private struct FocusTaskCardRow: View {
                         .multilineTextAlignment(.leading)
 
                     HStack(spacing: 6) {
-                        // Time & Duration Pill
                         HStack(spacing: 4) {
                             Image(systemName: task.startTime != nil ? "clock" : "hourglass")
                                 .font(.system(size: 10, weight: .bold))
@@ -972,7 +1089,6 @@ private struct FocusTaskCardRow: View {
                             in: Capsule()
                         )
 
-                        // Optional Location / Place Pill
                         if !task.trimmedLocation.isEmpty {
                             HStack(spacing: 4) {
                                 Image(systemName: "mappin.and.ellipse")
@@ -987,6 +1103,10 @@ private struct FocusTaskCardRow: View {
                             .background(DailyOSTheme.inputSurface, in: Capsule())
                             .overlay(Capsule().stroke(DailyOSTheme.hairline, lineWidth: 1))
                         }
+
+                        if task.requiresPhotoProof {
+                            PhotoProofStatusBadge(record: proofRecord)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -994,26 +1114,76 @@ private struct FocusTaskCardRow: View {
             }
             .buttonStyle(.plain)
 
-            // Right: Compact Circular Play Button -> Launches Deep Work Timer
-            Button(action: onPlayTimer) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow)
-                    .frame(width: 34, height: 34)
-                    .background(
-                        (task.isCompleted ? DailyOSTheme.inputSurface : DailyOSTheme.skyGlow.opacity(0.16)),
-                        in: Circle()
-                    )
-                    .overlay(Circle().stroke(task.isCompleted ? DailyOSTheme.hairline : DailyOSTheme.skyGlow.opacity(0.35), lineWidth: 1))
+            // Right: 1-Tap Camera Proof Toggle Pill + Compact Circular Play Button
+            HStack(spacing: 7) {
+                Button(action: onTogglePhotoProof) {
+                    Image(systemName: task.requiresPhotoProof ? "camera.fill" : "camera")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(task.requiresPhotoProof ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            task.requiresPhotoProof ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
+                            in: Circle()
+                        )
+                        .overlay(
+                            Circle().stroke(
+                                task.requiresPhotoProof ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
+                                lineWidth: 1
+                            )
+                        )
+                }
+                .buttonStyle(MidnightPressStyle())
+                .accessibilityLabel(task.requiresPhotoProof ? "Disable Photo Proof" : "Enable Photo Proof")
+
+                Button(action: onPlayTimer) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(task.isCompleted ? DailyOSTheme.eyebrow : DailyOSTheme.skyGlow)
+                        .frame(width: 34, height: 34)
+                        .background(
+                            (task.isCompleted ? DailyOSTheme.inputSurface : DailyOSTheme.skyGlow.opacity(0.16)),
+                            in: Circle()
+                        )
+                        .overlay(Circle().stroke(task.isCompleted ? DailyOSTheme.hairline : DailyOSTheme.skyGlow.opacity(0.35), lineWidth: 1))
+                }
+                .buttonStyle(MidnightPressStyle())
             }
-            .buttonStyle(.plain)
         }
         .padding(14)
         .ambientCard(
-            accent: task.isCompleted ? DailyOSTheme.emerald : nil,
+            accent: task.isCompleted ? DailyOSTheme.emerald : (task.requiresPhotoProof ? DailyOSTheme.skyGlow : nil),
             cornerRadius: 18,
             washOpacity: 0.06
         )
+    }
+}
+
+private struct PhotoProofStatusBadge: View {
+    let record: PhotoProofTaskRecord?
+
+    var body: some View {
+        let status = record?.lastStatus ?? .armed
+        let label: String = {
+            switch status {
+            case .verified: return "Verified ✓"
+            case .missed: return "Missed ✕"
+            case .armed: return "Proof Armed"
+            }
+        }()
+        let tint: Color = {
+            switch status {
+            case .verified: return DailyOSTheme.emerald
+            case .missed: return Color(hex: "#FF6B6B")
+            case .armed: return DailyOSTheme.indigoGlow
+            }
+        }()
+
+        Text(label)
+            .font(.system(size: 10, weight: .bold, design: .rounded))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(tint.opacity(0.14), in: Capsule())
     }
 }
 
@@ -1022,19 +1192,22 @@ private struct FocusTaskCardRow: View {
 private struct SyncedFocusBlockRow: View {
     let block: FocusBlockDisplayItem
     let isCurrent: Bool
+    let isPhotoProofEnabled: Bool
+    let proofRecord: PhotoProofTaskRecord?
+    let onTogglePhotoProof: () -> Void
     let onPlayTimer: () -> Void
 
     private var sourceColor: Color {
         switch block.source {
         case .googleCalendar: return DailyOSTheme.skyGlow
-        case .googleTasks: return Color(hex: "#A78BFA")
-        case .appleCalendar: return Color(hex: "#818CF8")
+        case .googleTasks: return DailyOSTheme.indigoGlow
+        case .appleCalendar: return DailyOSTheme.periwinkle
         case .local: return Color(hex: "#2DD4BF")
         }
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 11) {
             Image(systemName: block.source.iconName)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundStyle(isCurrent ? DailyOSTheme.emerald : sourceColor)
@@ -1059,22 +1232,46 @@ private struct SyncedFocusBlockRow: View {
                         .padding(.horizontal, 7)
                         .padding(.vertical, 2)
                         .background(sourceColor.opacity(0.14), in: Capsule())
+
+                    if isPhotoProofEnabled {
+                        PhotoProofStatusBadge(record: proofRecord)
+                    }
                 }
             }
 
             Spacer(minLength: 4)
 
-            Button(action: onPlayTimer) {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 12, weight: .bold))
-                    .foregroundStyle(sourceColor)
-                    .frame(width: 34, height: 34)
-                    .background(sourceColor.opacity(0.15), in: Circle())
+            HStack(spacing: 7) {
+                Button(action: onTogglePhotoProof) {
+                    Image(systemName: isPhotoProofEnabled ? "camera.fill" : "camera")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(isPhotoProofEnabled ? DailyOSTheme.emerald : DailyOSTheme.eyebrow)
+                        .frame(width: 32, height: 32)
+                        .background(
+                            isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.16) : DailyOSTheme.inputSurface,
+                            in: Circle()
+                        )
+                        .overlay(
+                            Circle().stroke(
+                                isPhotoProofEnabled ? DailyOSTheme.emerald.opacity(0.45) : DailyOSTheme.hairline,
+                                lineWidth: 1
+                            )
+                        )
+                }
+                .buttonStyle(MidnightPressStyle())
+
+                Button(action: onPlayTimer) {
+                    Image(systemName: "play.fill")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(sourceColor)
+                        .frame(width: 34, height: 34)
+                        .background(sourceColor.opacity(0.15), in: Circle())
+                }
+                .buttonStyle(MidnightPressStyle())
             }
-            .buttonStyle(.plain)
         }
         .padding(13)
-        .ambientCard(accent: isCurrent ? DailyOSTheme.emerald : nil, cornerRadius: 18, washOpacity: 0.08)
+        .ambientCard(accent: isCurrent ? DailyOSTheme.emerald : (isPhotoProofEnabled ? DailyOSTheme.skyGlow : nil), cornerRadius: 18, washOpacity: 0.08)
     }
 }
 
@@ -1120,9 +1317,13 @@ private struct DeepWorkRingFullScreenView: View {
 
                 // Iconic Glowing Ring + Countdown + Editable Cue
                 ZStack {
+                    AmbientBreathingGlow(
+                        color: timerController.isPaused ? Color(hex: "#FFB020") : DailyOSTheme.skyGlow,
+                        diameter: 310
+                    )
                     AmbientBloomRing(
                         progress: timerController.progressFraction,
-                        color: timerController.isPaused ? DailyOSTheme.solarAccent : DailyOSTheme.skyGlow,
+                        color: timerController.isPaused ? Color(hex: "#FFB020") : DailyOSTheme.skyGlow,
                         lineWidth: 14,
                         diameter: 264
                     )

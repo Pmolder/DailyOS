@@ -12,6 +12,7 @@ final class FocusTaskItem {
     var startTime: Date? = nil
     var durationMinutes: Int = 60
     var isCompleted: Bool = false
+    var requiresPhotoProof: Bool = false
     var createdAt: Date = Date()
 
     init(
@@ -23,6 +24,7 @@ final class FocusTaskItem {
         startTime: Date? = nil,
         durationMinutes: Int = 60,
         isCompleted: Bool = false,
+        requiresPhotoProof: Bool = false,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -33,6 +35,7 @@ final class FocusTaskItem {
         self.startTime = startTime
         self.durationMinutes = max(5, min(720, durationMinutes))
         self.isCompleted = isCompleted
+        self.requiresPhotoProof = requiresPhotoProof
         self.createdAt = createdAt
     }
 

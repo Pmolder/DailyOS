@@ -53,6 +53,7 @@ enum HabitMetricsEngine {
         let base = (storedDay == today) ? UserDefaults.standard.integer(forKey: focusMinutesCountKey) : 0
         UserDefaults.standard.set(today, forKey: focusMinutesDayKey)
         UserDefaults.standard.set(base + max(0, minutes), forKey: focusMinutesCountKey)
+        WakeStatsStore.recordFocusMinutes(minutes, forDayKey: today)
     }
 
     static var focusMinutesToday: Int {

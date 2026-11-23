@@ -478,5 +478,6 @@ struct DailyOSWidgetsBundle: WidgetBundle {
         DailyCheckInWidget()
         HabitMatrixWidget()
         TodayScoreWidget()
+        FocusLiveActivityWidget()
     }
 }

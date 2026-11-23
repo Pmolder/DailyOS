@@ -10,6 +10,7 @@ struct HabitAnalyticsSheetView: View {
     let allLogs: [HabitLog]
     @State var selectedHabitID: UUID
     @State private var selectedYear: Int = ISOWeekCalendar.current.component(.year, from: Date())
+    @State private var showingWeeklyRecap: Bool = false
 
     private var activeHabit: HabitItem? {
         habits.first(where: { $0.id == selectedHabitID }) ?? habits.first
@@ -108,6 +109,21 @@ struct HabitAnalyticsSheetView: View {
                                 }
                             }
                             Spacer()
+
+                            // Quiet Weekly Recap Entry Pill
+                            Button {
+                                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                showingWeeklyRecap = true
+                            } label: {
+                                Label("Weekly Recap", systemImage: "sparkles")
+                                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                                    .foregroundStyle(DailyOSTheme.indigoGlow)
+                                    .padding(.horizontal, 11)
+                                    .padding(.vertical, 7)
+                                    .background(DailyOSTheme.indigoGlow.opacity(0.14), in: Capsule())
+                                    .overlay(Capsule().stroke(DailyOSTheme.indigoGlow.opacity(0.32), lineWidth: 1))
+                            }
+                            .buttonStyle(MidnightPressStyle())
                         }
                         .padding(14)
                         .ambientCard(accent: accent, cornerRadius: 18, washOpacity: 0.06)
@@ -262,6 +278,9 @@ struct HabitAnalyticsSheetView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $showingWeeklyRecap) {
+            WeeklyRecapSheet()
+        }
     }
 
     private func analyticsBentoTile(value: String, label: String, badgeIcon: String, accent: Color) -> some View {

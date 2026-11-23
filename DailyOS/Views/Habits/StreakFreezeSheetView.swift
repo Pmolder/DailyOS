@@ -24,6 +24,7 @@ struct StreakFreezeSheetView: View {
 
                 // Stylized Gradient Flame Behind Giant Bold Streak Number
                 ZStack {
+                    AmbientBreathingGlow(color: Color(hex: "#FF7A00"), diameter: 255)
                     // Ambient orange radial bloom
                     Circle()
                         .fill(

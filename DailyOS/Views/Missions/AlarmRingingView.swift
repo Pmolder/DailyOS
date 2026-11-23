@@ -578,6 +578,12 @@ struct AlarmRingingView: View {
     }
 
     private func enterWakeCompleteSummary() {
+        WakeStatsStore.recordWakeCompletion(
+            physicalMission: resolvedPhysicalMission,
+            brainGame: resolvedBrainGame,
+            brainSummary: brainCompletionSummary,
+            wakeDurationSeconds: Int(audioManager.wakeElapsedSeconds)
+        )
         alarmEngine.finalizeWakeAudioAndNotifications()
         restoreScreenBrightnessIfNeeded()
         withAnimation(.spring(response: 0.35)) {

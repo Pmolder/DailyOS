@@ -17,6 +17,7 @@ struct FocusTaskEditorSheet: View {
     @State private var startTime: Date = Date()
     @State private var durationMinutes: Int = 60
     @State private var showingCustomDurationStepper: Bool = false
+    @State private var requiresPhotoProof: Bool = false
 
     private let durationPresets: [(label: String, mins: Int)] = [
         ("30m", 30),
@@ -223,7 +224,41 @@ struct FocusTaskEditorSheet: View {
                             .ambientCard(cornerRadius: 18)
                         }
 
-                        // 5. NOTES (Optional)
+                        // 5. SMART PHOTO PROOF OPT-IN
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("ACCOUNTABILITY").eyebrowStyle()
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Toggle(isOn: $requiresPhotoProof) {
+                                    HStack(spacing: 10) {
+                                        Image(systemName: requiresPhotoProof ? "camera.fill" : "camera")
+                                            .font(.system(size: 14, weight: .semibold))
+                                            .foregroundStyle(requiresPhotoProof ? DailyOSTheme.skyGlow : DailyOSTheme.eyebrow)
+                                            .frame(width: 30, height: 30)
+                                            .background(
+                                                (requiresPhotoProof ? DailyOSTheme.skyGlow : DailyOSTheme.eyebrow).opacity(0.14),
+                                                in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                                            )
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text("Require Photo Proof")
+                                                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                                                .foregroundStyle(Color.white)
+                                            let interval = PhotoProofSettings.photoIntervalMinutes
+                                            Text(durationMinutes >= interval
+                                                 ? "Start photo + every \(interval)m check-in"
+                                                 : "Start photo + 1 hidden random mid-task check")
+                                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                                .foregroundStyle(DailyOSTheme.eyebrow)
+                                        }
+                                    }
+                                }
+                                .tint(DailyOSTheme.skyGlow)
+                            }
+                            .padding(14)
+                            .ambientCard(accent: requiresPhotoProof ? DailyOSTheme.skyGlow : nil, cornerRadius: 16, washOpacity: 0.08)
+                        }
+
+                        // 6. NOTES (Optional)
                         VStack(alignment: .leading, spacing: 8) {
                             Text("NOTES (OPTIONAL)").eyebrowStyle()
                             TextField(
@@ -242,6 +277,7 @@ struct FocusTaskEditorSheet: View {
 
                         if let existingTask {
                             Button {
+                                PhotoProofScheduler.shared.cancelProofs(for: existingTask.id.uuidString)
                                 modelContext.delete(existingTask)
                                 try? modelContext.save()
                                 SharedModelContainer.shared.save()
@@ -273,7 +309,7 @@ struct FocusTaskEditorSheet: View {
                         .padding(.vertical, 16)
                         .background(canSave ? DailyOSTheme.skyGlow : DailyOSTheme.emptyCell, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressStyle())
                 .disabled(!canSave)
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
@@ -320,11 +356,13 @@ struct FocusTaskEditorSheet: View {
                 startTime = defaultRoundedStartTime(for: selectedDate)
             }
             durationMinutes = task.durationMinutes
+            requiresPhotoProof = task.requiresPhotoProof
         } else {
             selectedDate = initialDate
             hasSpecificTime = false
             startTime = defaultRoundedStartTime(for: initialDate)
             durationMinutes = 60
+            requiresPhotoProof = false
         }
     }
 
@@ -359,6 +397,7 @@ struct FocusTaskEditorSheet: View {
         let key = HabitItem.dateKey(for: selectedDate)
         let resolvedStart: Date? = hasSpecificTime ? combine(date: selectedDate, time: startTime) : nil
 
+        let savedTaskID: String
         if let task = existingTask {
             task.title = cleanTitle
             task.location = cleanLoc
@@ -366,6 +405,8 @@ struct FocusTaskEditorSheet: View {
             task.dayKey = key
             task.startTime = resolvedStart
             task.durationMinutes = durationMinutes
+            task.requiresPhotoProof = requiresPhotoProof
+            savedTaskID = task.id.uuidString
         } else {
             let newTask = FocusTaskItem(
                 title: cleanTitle,
@@ -373,13 +414,28 @@ struct FocusTaskEditorSheet: View {
                 notes: cleanNotes,
                 dayKey: key,
                 startTime: resolvedStart,
-                durationMinutes: durationMinutes
+                durationMinutes: durationMinutes,
+                requiresPhotoProof: requiresPhotoProof
             )
             modelContext.insert(newTask)
+            savedTaskID = newTask.id.uuidString
         }
 
         try? modelContext.save()
         SharedModelContainer.shared.save()
+
+        if requiresPhotoProof, let scheduledStart = resolvedStart {
+            PhotoProofScheduler.shared.scheduleProofs(
+                taskID: savedTaskID,
+                taskTitle: cleanTitle,
+                taskNotes: cleanNotes,
+                taskStart: scheduledStart,
+                durationMinutes: durationMinutes
+            )
+        } else if !requiresPhotoProof {
+            PhotoProofScheduler.shared.cancelProofs(for: savedTaskID)
+        }
+
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 }

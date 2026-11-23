@@ -292,7 +292,7 @@ private struct AlarmCardRowView: View {
                     )
                 )
                 .labelsHidden()
-                .tint(DailyOSTheme.solarAccent)
+                .tint(DailyOSTheme.indigoGlow)
             }
 
             // ISO-8601 Mon–Sun Mini Weekday Indicator Pills
@@ -304,13 +304,13 @@ private struct AlarmCardRowView: View {
                         .frame(width: 24, height: 22)
                         .background(
                             active
-                                ? (alarm.isEnabled ? DailyOSTheme.solarAccent.opacity(0.22) : Color.white.opacity(0.08))
+                                ? (alarm.isEnabled ? DailyOSTheme.indigoGlow.opacity(0.22) : Color.white.opacity(0.08))
                                 : DailyOSTheme.inputSurface,
                             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
                         )
                         .foregroundStyle(
                             active
-                                ? (alarm.isEnabled ? DailyOSTheme.solarAccent : Color.white.opacity(0.55))
+                                ? (alarm.isEnabled ? DailyOSTheme.indigoGlow : Color.white.opacity(0.55))
                                 : DailyOSTheme.eyebrow.opacity(0.6)
                         )
                 }
@@ -324,12 +324,12 @@ private struct AlarmCardRowView: View {
                         Text("Test")
                             .font(.system(size: 11, weight: .bold, design: .rounded))
                     }
-                    .foregroundStyle(DailyOSTheme.solarAccent)
+                    .foregroundStyle(Color(hex: "#FFB020"))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
-                    .background(DailyOSTheme.solarAccent.opacity(0.14), in: Capsule())
+                    .background(Color(hex: "#FFB020").opacity(0.14), in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressStyle())
             }
 
             // Stage-1 Physical Mission + Stage-2 Brain Game Pills
@@ -339,10 +339,10 @@ private struct AlarmCardRowView: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
                     .background(
-                        (alarm.isEnabled ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow).opacity(0.15),
+                        (alarm.isEnabled ? DailyOSTheme.indigoGlow : DailyOSTheme.eyebrow).opacity(0.15),
                         in: Capsule()
                     )
-                    .foregroundStyle(alarm.isEnabled ? DailyOSTheme.solarAccent : Color.white.opacity(0.55))
+                    .foregroundStyle(alarm.isEnabled ? DailyOSTheme.periwinkle : Color.white.opacity(0.55))
 
                 if alarm.brainGameMode != .off {
                     Label(alarm.brainGameMode.shortBadge, systemImage: alarm.brainGameMode.iconName)
@@ -359,9 +359,9 @@ private struct AlarmCardRowView: View {
         }
         .padding(16)
         .ambientCard(
-            accent: alarm.isEnabled ? DailyOSTheme.solarAccent : nil,
+            accent: alarm.isEnabled ? Color(hex: "#FFB020") : nil,
             cornerRadius: 22,
-            washOpacity: 0.095
+            washOpacity: 0.065
         )
         .contentShape(Rectangle())
         .onTapGesture {

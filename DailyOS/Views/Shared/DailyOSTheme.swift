@@ -16,6 +16,8 @@ enum DailyOSTheme {
 
     // MARK: - Signature Accents
     static let skyGlow = Color(hex: "#60A5FA")
+    static let indigoGlow = Color(hex: "#8B7CFF")
+    static let periwinkle = Color(hex: "#7C8CFF")
     static let emerald = Color(hex: "#34D399")
     static let iceBlue = Color(hex: "#7DD3FC")
     static let solarAccent = Color(hex: "#FF7A00")
@@ -121,7 +123,7 @@ struct FrostedCircleButton: View {
                 .background(DailyOSTheme.buttonSurface, in: Circle())
                 .overlay(Circle().stroke(DailyOSTheme.buttonStroke, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MidnightPressStyle())
     }
 }
 

@@ -5,12 +5,14 @@ struct GeminiVerificationResult {
     let verified: Bool
     let reason: String
     let usedOfflineFallback: Bool
+    var noAPIKeyConfigured: Bool = false
 }
 
-/// Sends a live camera JPEG + active Focus task context to `gemini-2.5-flash`
-/// to verify whether the user is genuinely performing their scheduled task.
+/// Sends a compressed live camera JPEG (1024px, quality 0.65) + active Focus task context
+/// to `gemini-3.5-flash-lite` (with automatic fallback to `gemini-2.5-flash` on HTTP 404).
 enum GeminiVisionService {
-    private static let endpointBase = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    private static let primaryModel = "gemini-3.5-flash-lite"
+    private static let fallbackModel = "gemini-2.5-flash"
 
     static func verifyFocusPhoto(
         image: UIImage,
@@ -21,10 +23,10 @@ enum GeminiVisionService {
 
         // Offline / No-Key Testing Fallback
         if KeychainService.offlineVisionFallbackEnabled {
-            try? await Task.sleep(nanoseconds: 500_000_000)
+            try? await Task.sleep(nanoseconds: 400_000_000)
             return GeminiVerificationResult(
                 verified: true,
-                reason: "Offline fallback test mode enabled: live camera snapshot accepted for '\(taskTitle)'.",
+                reason: "Offline fallback enabled: live snapshot accepted for '\(taskTitle)'.",
                 usedOfflineFallback: true
             )
         }
@@ -32,13 +34,14 @@ enum GeminiVisionService {
         guard !apiKey.isEmpty else {
             return GeminiVerificationResult(
                 verified: false,
-                reason: "No Gemini API key configured. Open Settings to add your key or enable Offline Test Mode.",
-                usedOfflineFallback: false
+                reason: "No Gemini API key configured. Add a free Google AI Studio key in Settings.",
+                usedOfflineFallback: false,
+                noAPIKeyConfigured: true
             )
         }
 
         guard let resized = resizeImage(image, maxDimension: 1024),
-              let jpegData = resized.jpegData(compressionQuality: 0.75) else {
+              let jpegData = resized.jpegData(compressionQuality: 0.65) else {
             return GeminiVerificationResult(
                 verified: false,
                 reason: "Could not encode live camera photo to JPEG.",
@@ -83,12 +86,27 @@ enum GeminiVisionService {
             ]
         ]
 
-        guard var components = URLComponents(string: endpointBase) else {
-            return GeminiVerificationResult(verified: false, reason: "Invalid Gemini endpoint URL.", usedOfflineFallback: false)
+        // Attempt primary future-proof model (`gemini-3.5-flash-lite`), fallback to `gemini-2.5-flash` on 404
+        let primaryAttempt = await sendRequest(model: primaryModel, apiKey: apiKey, body: body)
+        if primaryAttempt.statusCode == 404 {
+            let fallbackAttempt = await sendRequest(model: fallbackModel, apiKey: apiKey, body: body)
+            return fallbackAttempt.result
+        }
+        return primaryAttempt.result
+    }
+
+    private static func sendRequest(
+        model: String,
+        apiKey: String,
+        body: [String: Any]
+    ) async -> (statusCode: Int?, result: GeminiVerificationResult) {
+        let endpoint = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent"
+        guard var components = URLComponents(string: endpoint) else {
+            return (nil, GeminiVerificationResult(verified: false, reason: "Invalid Gemini endpoint URL.", usedOfflineFallback: false))
         }
         components.queryItems = [URLQueryItem(name: "key", value: apiKey)]
         guard let url = components.url else {
-            return GeminiVerificationResult(verified: false, reason: "Failed to build Gemini API URL.", usedOfflineFallback: false)
+            return (nil, GeminiVerificationResult(verified: false, reason: "Failed to build Gemini API URL.", usedOfflineFallback: false))
         }
 
         var request = URLRequest(url: url)
@@ -101,26 +119,32 @@ enum GeminiVisionService {
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
-                return GeminiVerificationResult(verified: false, reason: "Invalid network response from Gemini.", usedOfflineFallback: false)
+                return (nil, GeminiVerificationResult(verified: false, reason: "Invalid network response from Gemini.", usedOfflineFallback: false))
             }
 
             guard (200...299).contains(httpResponse.statusCode) else {
                 let errBody = String(data: data, encoding: .utf8) ?? "HTTP \(httpResponse.statusCode)"
                 let snippet = String(errBody.prefix(160))
-                return GeminiVerificationResult(
-                    verified: false,
-                    reason: "Gemini API error (HTTP \(httpResponse.statusCode)): \(snippet)",
-                    usedOfflineFallback: false
+                return (
+                    httpResponse.statusCode,
+                    GeminiVerificationResult(
+                        verified: false,
+                        reason: "Gemini API error (HTTP \(httpResponse.statusCode)): \(snippet)",
+                        usedOfflineFallback: false
+                    )
                 )
             }
 
             let rawText = extractCandidateText(from: data)
-            return parseVerificationResponse(rawText)
+            return (httpResponse.statusCode, parseVerificationResponse(rawText))
         } catch {
-            return GeminiVerificationResult(
-                verified: false,
-                reason: "Network error contacting Gemini: \(error.localizedDescription)",
-                usedOfflineFallback: false
+            return (
+                nil,
+                GeminiVerificationResult(
+                    verified: false,
+                    reason: "Network error contacting Gemini: \(error.localizedDescription)",
+                    usedOfflineFallback: false
+                )
             )
         }
     }

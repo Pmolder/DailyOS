@@ -16,9 +16,15 @@ struct SettingsView: View {
     @ObservedObject private var focusManager = FocusAccountabilityManager.shared
     @ObservedObject private var googleAuth = GoogleAuthService.shared
 
-    // Daily Notification Studio & Apple Calendar Filter
+    // Daily Notification Studio, Weekly Recap & Apple Calendar Filter
     @State private var showingNotificationStudio: Bool = false
+    @State private var showingWeeklyRecap: Bool = false
     @State private var showingAppleCalendarFilter: Bool = false
+
+    // Smart Focus Photo Proof Timing Settings
+    @AppStorage(PhotoProofSettings.initialMinutesKey) private var initialPhotoMinutes: Int = 2
+    @AppStorage(PhotoProofSettings.intervalMinutesKey) private var photoIntervalMinutes: Int = 30
+    @AppStorage(PhotoProofSettings.captureSecondsKey) private var photoCaptureSeconds: Int = 30
 
     // Factory Reset (Two-Step Alert)
     @State private var showingResetConfirmationStep1: Bool = false
@@ -90,6 +96,12 @@ struct SettingsView: View {
                         // 0. Daily Notifications Studio
                         dailyNotificationsEntryCard
 
+                        // 0b. Weekly Winter Arc Recap (Quiet Entry Row)
+                        weeklyRecapEntryCard
+
+                        // 0c. Smart Focus Photo Proof Settings
+                        focusPhotoProofSettingsCard
+
                         // 1. Wake-Up QR / Barcode Registration
                         wakeQRCard
 
@@ -135,6 +147,9 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showingNotificationStudio) {
                 NotificationStudioView()
+            }
+            .sheet(isPresented: $showingWeeklyRecap) {
+                WeeklyRecapSheet()
             }
             .sheet(isPresented: $showingAppleCalendarFilter) {
                 AppleCalendarFilterSheet()
@@ -260,7 +275,85 @@ struct SettingsView: View {
             .padding(18)
             .ambientCard(accent: DailyOSTheme.skyGlow, cornerRadius: 22, washOpacity: 0.08)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MidnightPressStyle())
+    }
+
+    // MARK: - 0b. Weekly Winter Arc Recap Entry Row
+
+    private var weeklyRecapEntryCard: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            showingWeeklyRecap = true
+        } label: {
+            HStack(spacing: 12) {
+                iconBadge("sparkles", color: DailyOSTheme.indigoGlow)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Weekly Winter Arc Recap")
+                        .font(.system(size: 15, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                    Text("7-day score, habits, focus hours & 9:16 story card")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(DailyOSTheme.eyebrow)
+            }
+            .padding(18)
+            .ambientCard(accent: DailyOSTheme.indigoGlow, cornerRadius: 22, washOpacity: 0.08)
+        }
+        .buttonStyle(MidnightPressStyle())
+    }
+
+    // MARK: - 0c. Focus Photo Proof Settings Card
+
+    private var focusPhotoProofSettingsCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("FOCUS PHOTO PROOF")
+                .eyebrowStyle()
+
+            HStack(spacing: 12) {
+                iconBadge("camera.badge.clock.fill", color: DailyOSTheme.emerald)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Smart Proof & Random Spot-Checks")
+                        .font(.system(size: 15, weight: .semibold, design: .rounded))
+                        .foregroundStyle(Color.white)
+                    Text("Applies only to opted-in tasks & calendar events")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(DailyOSTheme.eyebrow)
+                }
+                Spacer()
+            }
+
+            Divider().overlay(DailyOSTheme.hairline)
+
+            Stepper("Initial Start Photo Window: \(initialPhotoMinutes) min", value: $initialPhotoMinutes, in: 1...10, step: 1)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white)
+
+            Divider().overlay(DailyOSTheme.hairline)
+
+            Stepper("Check-In Interval & Short Threshold: \(photoIntervalMinutes) min", value: $photoIntervalMinutes, in: 10...60, step: 5)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white)
+
+            Divider().overlay(DailyOSTheme.hairline)
+
+            Stepper("Capture Countdown Window: \(photoCaptureSeconds) sec", value: $photoCaptureSeconds, in: 15...120, step: 5)
+                .font(.system(size: 14, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .foregroundStyle(Color.white)
+
+            Text("Tasks < \(photoIntervalMinutes) min get an initial start photo + 1 hidden random mid-task spot-check. Tasks ≥ \(photoIntervalMinutes) min re-anchor every \(photoIntervalMinutes) min.")
+                .font(.system(size: 11, weight: .medium, design: .rounded))
+                .foregroundStyle(DailyOSTheme.eyebrow)
+        }
+        .padding(18)
+        .ambientCard(cornerRadius: 22)
     }
 
     // MARK: - 1. Wake-Up QR Card
@@ -305,9 +398,9 @@ struct SettingsView: View {
                     .foregroundStyle(Color.black)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 12)
-                    .background(DailyOSTheme.solarAccent, in: Capsule())
+                    .background(DailyOSTheme.indigoGlow, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressStyle())
 
                 if isWakeQRRegistered {
                     Button {
@@ -580,7 +673,7 @@ struct SettingsView: View {
 
     private var geminiKeychainCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("GEMINI 2.5 FLASH AI VISION")
+            Text("GEMINI 3.5 FLASH-LITE AI VISION")
                 .eyebrowStyle()
 
             HStack(spacing: 12) {
@@ -701,9 +794,9 @@ struct SettingsView: View {
                         .foregroundStyle(Color.black)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .background(DailyOSTheme.solarAccent, in: Capsule())
+                        .background(DailyOSTheme.indigoGlow, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressStyle())
 
                 Button(action: prepareFileExport) {
                     Label("Save File", systemImage: "square.and.arrow.up")
@@ -895,8 +988,8 @@ struct SettingsView: View {
     }
 
     private var installedVersionDisplay: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "3.6.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "16"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "4.0.0"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "17"
         return "v\(short) (Build \(build))"
     }
 

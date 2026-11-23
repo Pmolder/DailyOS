@@ -9,10 +9,12 @@ import UIKit
 @MainActor
 enum AppResetManager {
     static func performFactoryReset(modelContext: ModelContext) {
-        // 1. Stop any running audio, keep-alive, Deep Work timer, or focus alarms
+        // 1. Stop any running audio, keep-alive, Live Activities, Deep Work timer, or focus alarms
         AlarmAudioManager.shared.stopPreview()
         AlarmAudioManager.shared.stopFocusWarning()
         AlarmAudioManager.shared.stopSilentKeepAlive(reEnableIdleTimer: true)
+        FocusLiveActivityManager.shared.endAll()
+        PhotoProofScheduler.shared.cancelAllProofs()
         DeepWorkTimerController.shared.prepare(title: "DEEP WORK", minutes: 45, cue: "", autoStart: false)
 
         // 2. Delete all SwiftData records across every registered @Model type
@@ -42,6 +44,9 @@ enum AppResetManager {
         KeychainService.saveGoogleClientID("")
         KeychainService.deleteGeminiAPIKey()
         WakeQRStorage.clear()
+        CalendarPhotoProofStore.clearAll()
+        PhotoProofLogStore.clearAll()
+        WakeStatsStore.clearAll()
         WidgetBridge.clearAllBridgeFiles()
 
         // 5. Re-initialize clean state across managers & reload WidgetKit timelines

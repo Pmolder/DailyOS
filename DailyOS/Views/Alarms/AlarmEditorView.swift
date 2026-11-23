@@ -73,7 +73,7 @@ struct AlarmEditorView: View {
                             .labelsHidden()
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 4)
-                            .ambientCard(accent: DailyOSTheme.solarAccent, cornerRadius: 22, washOpacity: 0.08)
+                            .ambientCard(accent: DailyOSTheme.indigoGlow, cornerRadius: 22, washOpacity: 0.08)
                         }
 
                         // 2. LABEL & SCHEDULE
@@ -84,7 +84,7 @@ struct AlarmEditorView: View {
                                 Spacer()
                                 Text(Weekday.formatSummary(for: repeatDays))
                                     .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(DailyOSTheme.solarAccent)
+                                    .foregroundStyle(DailyOSTheme.indigoGlow)
                             }
 
                             VStack(spacing: 14) {
@@ -111,12 +111,12 @@ struct AlarmEditorView: View {
                                                 .frame(maxWidth: .infinity)
                                                 .padding(.vertical, 10)
                                                 .background(
-                                                    isSelected ? DailyOSTheme.solarAccent : DailyOSTheme.inputSurface,
+                                                    isSelected ? DailyOSTheme.indigoGlow : DailyOSTheme.inputSurface,
                                                     in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                                                 )
                                                 .overlay(
                                                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                                        .stroke(isSelected ? DailyOSTheme.solarAccent : DailyOSTheme.hairline, lineWidth: 1)
+                                                        .stroke(isSelected ? DailyOSTheme.indigoGlow : DailyOSTheme.hairline, lineWidth: 1)
                                                 )
                                                 .foregroundStyle(isSelected ? Color.black : Color.white.opacity(0.8))
                                         }
@@ -136,7 +136,7 @@ struct AlarmEditorView: View {
                                 Spacer()
                                 Text(selectedSoundscape.displayName)
                                     .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                    .foregroundStyle(DailyOSTheme.solarAccent)
+                                    .foregroundStyle(DailyOSTheme.indigoGlow)
                             }
 
                             VStack(spacing: 12) {
@@ -178,7 +178,7 @@ struct AlarmEditorView: View {
                                                         .font(.system(size: 11, weight: .bold, design: .rounded))
                                                         .tracking(0.8)
                                                         .textCase(.uppercase)
-                                                        .foregroundStyle(DailyOSTheme.solarAccent)
+                                                        .foregroundStyle(DailyOSTheme.indigoGlow)
                                                     Spacer()
                                                     Text(category.subtitle)
                                                         .font(.system(size: 10, weight: .medium, design: .rounded))
@@ -196,7 +196,7 @@ struct AlarmEditorView: View {
                                                                 HStack(spacing: 10) {
                                                                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                                                                         .font(.system(size: 16, weight: .semibold))
-                                                                        .foregroundStyle(isSelected ? DailyOSTheme.solarAccent : DailyOSTheme.eyebrow)
+                                                                        .foregroundStyle(isSelected ? DailyOSTheme.indigoGlow : DailyOSTheme.eyebrow)
 
                                                                     VStack(alignment: .leading, spacing: 2) {
                                                                         Text(sound.displayName)
@@ -218,12 +218,12 @@ struct AlarmEditorView: View {
                                                         .padding(.horizontal, 12)
                                                         .padding(.vertical, 10)
                                                         .background(
-                                                            isSelected ? DailyOSTheme.solarAccent.opacity(0.12) : DailyOSTheme.inputSurface,
+                                                            isSelected ? DailyOSTheme.indigoGlow.opacity(0.12) : DailyOSTheme.inputSurface,
                                                             in: RoundedRectangle(cornerRadius: 12, style: .continuous)
                                                         )
                                                         .overlay(
                                                             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                                                .stroke(isSelected ? DailyOSTheme.solarAccent.opacity(0.45) : DailyOSTheme.hairline, lineWidth: 1)
+                                                                .stroke(isSelected ? DailyOSTheme.indigoGlow.opacity(0.45) : DailyOSTheme.hairline, lineWidth: 1)
                                                         )
                                                     }
                                                 }
@@ -238,10 +238,10 @@ struct AlarmEditorView: View {
                                     } label: {
                                         Label("Browse 12 Procedural Soundscapes", systemImage: "waveform")
                                             .font(.system(size: 13, weight: .bold, design: .rounded))
-                                            .foregroundStyle(DailyOSTheme.solarAccent)
+                                            .foregroundStyle(DailyOSTheme.indigoGlow)
                                             .frame(maxWidth: .infinity)
                                             .padding(.vertical, 10)
-                                            .background(DailyOSTheme.solarAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                            .background(DailyOSTheme.indigoGlow.opacity(0.14), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                                     }
                                     .buttonStyle(.plain)
                                 }
@@ -268,7 +268,7 @@ struct AlarmEditorView: View {
                                         }
                                     }
                                     .pickerStyle(.menu)
-                                    .tint(DailyOSTheme.solarAccent)
+                                    .tint(DailyOSTheme.indigoGlow)
                                 }
 
                                 if selectedMission == .random {
@@ -304,7 +304,7 @@ struct AlarmEditorView: View {
                                                 .multilineTextAlignment(.trailing)
                                                 .font(.system(size: 15, weight: .bold, design: .rounded))
                                                 .monospacedDigit()
-                                                .foregroundStyle(DailyOSTheme.solarAccent)
+                                                .foregroundStyle(DailyOSTheme.indigoGlow)
                                                 .padding(.horizontal, 10)
                                                 .padding(.vertical, 6)
                                                 .frame(width: 78)
@@ -332,7 +332,7 @@ struct AlarmEditorView: View {
                                                         .frame(maxWidth: .infinity)
                                                         .padding(.vertical, 7)
                                                         .background(
-                                                            active ? DailyOSTheme.solarAccent : DailyOSTheme.inputSurface,
+                                                            active ? DailyOSTheme.indigoGlow : DailyOSTheme.inputSurface,
                                                             in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                                                         )
                                                         .foregroundStyle(active ? Color.black : Color.white)
@@ -361,7 +361,7 @@ struct AlarmEditorView: View {
                                             Text(formattedLimitLabel)
                                                 .font(.system(size: 15, weight: .bold, design: .rounded))
                                                 .monospacedDigit()
-                                                .foregroundStyle(DailyOSTheme.solarAccent)
+                                                .foregroundStyle(DailyOSTheme.indigoGlow)
                                         }
 
                                         HStack(spacing: 6) {
@@ -377,7 +377,7 @@ struct AlarmEditorView: View {
                                                         .frame(maxWidth: .infinity)
                                                         .padding(.vertical, 7)
                                                         .background(
-                                                            active ? DailyOSTheme.solarAccent : DailyOSTheme.inputSurface,
+                                                            active ? DailyOSTheme.indigoGlow : DailyOSTheme.inputSurface,
                                                             in: RoundedRectangle(cornerRadius: 9, style: .continuous)
                                                         )
                                                         .foregroundStyle(active ? Color.black : Color.white)
@@ -409,7 +409,7 @@ struct AlarmEditorView: View {
                                             Spacer()
                                             Text(WakeQRStorage.isRegistered ? "Registered" : "Not Set (Settings)")
                                                 .font(.system(size: 12, weight: .bold, design: .rounded))
-                                                .foregroundStyle(WakeQRStorage.isRegistered ? DailyOSTheme.emerald : DailyOSTheme.solarAccent)
+                                                .foregroundStyle(WakeQRStorage.isRegistered ? DailyOSTheme.emerald : DailyOSTheme.indigoGlow)
                                         }
                                     }
                                 }
@@ -436,7 +436,7 @@ struct AlarmEditorView: View {
                                         }
                                     }
                                     .pickerStyle(.menu)
-                                    .tint(DailyOSTheme.solarAccent)
+                                    .tint(DailyOSTheme.indigoGlow)
                                 }
 
                                 if selectedBrainGame == .random || selectedBrainGame == .reflexStrike {
@@ -492,9 +492,9 @@ struct AlarmEditorView: View {
                         .foregroundStyle(Color.black)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 16)
-                        .background(DailyOSTheme.solarAccent, in: Capsule())
+                        .background(DailyOSTheme.indigoGlow, in: Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(MidnightPressStyle())
                 .padding(.horizontal, 18)
                 .padding(.vertical, 14)
             }
@@ -516,10 +516,10 @@ struct AlarmEditorView: View {
         } label: {
             Image(systemName: isPlaying ? "stop.fill" : "speaker.wave.2.fill")
                 .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(isPlaying ? Color.black : DailyOSTheme.solarAccent)
+                .foregroundStyle(isPlaying ? Color.black : DailyOSTheme.indigoGlow)
                 .frame(width: 34, height: 34)
                 .background(
-                    isPlaying ? DailyOSTheme.solarAccent : DailyOSTheme.solarAccent.opacity(0.16),
+                    isPlaying ? DailyOSTheme.indigoGlow : DailyOSTheme.indigoGlow.opacity(0.16),
                     in: Circle()
                 )
         }

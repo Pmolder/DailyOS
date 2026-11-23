@@ -35,6 +35,12 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
                     AlarmEngine.shared.triggerAlarm(alarm)
                 }
             }
+        } else if let type = userInfo["type"] as? String, type == PhotoProofScheduler.notificationType {
+            Task { @MainActor in
+                _ = PhotoProofScheduler.shared.handleNotificationInteraction(userInfo: userInfo)
+            }
+            completionHandler([.sound])
+            return
         } else if let type = userInfo["type"] as? String, type == "focus_task_alarm" {
             let taskID = (userInfo["taskID"] as? String) ?? "active_focus_task"
             let taskTitle = (userInfo["taskTitle"] as? String) ?? "Scheduled Focus Task"
@@ -61,7 +67,12 @@ final class DailyOSAppDelegate: NSObject, UIApplicationDelegate, UNUserNotificat
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
+        let userInfo = response.notification.request.content.userInfo
         Task { @MainActor in
+            if PhotoProofScheduler.shared.handleNotificationInteraction(userInfo: userInfo) {
+                completionHandler()
+                return
+            }
             await NotificationScheduler.shared.handleNotificationResponse(response)
             completionHandler()
         }

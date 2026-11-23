@@ -22,6 +22,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>DailyOS optionally reads your iOS calendars to schedule focus accountability check-ins for your events.</string>
 	<key>NSCalendarsUsageDescription</key>

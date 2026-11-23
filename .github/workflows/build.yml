@@ -26,7 +26,7 @@ jobs:
         id: meta
         run: |
           SHORT_SHA=$(git rev-parse --short HEAD)
-          VERSION="3.6.0"
+          VERSION="4.0.0"
           BUILD_NUM="${{ github.run_number }}"
           IPA_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}.ipa"
           ARTIFACT_NAME="DailyOS-v${VERSION}-b${BUILD_NUM}-${SHORT_SHA}"
@@ -71,8 +71,9 @@ jobs:
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/DailyOS.app Payload/
 
-          echo "=== Verifying Main App Info.plist Version & Privacy Keys ==="
-          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSMotionUsageDescription|NSCameraUsageDescription|NSCalendarsFullAccessUsageDescription"
+          echo "=== Verifying Main App Info.plist Version, Live Activities & Privacy Keys ==="
+          plutil -p Payload/DailyOS.app/Info.plist | grep -E "CFBundleShortVersionString|CFBundleVersion|CFBundleIdentifier|NSSupportsLiveActivities|NSMotionUsageDescription|NSCameraUsageDescription|NSCalendarsFullAccessUsageDescription"
+          plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSSupportsLiveActivities"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSMotionUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCameraUsageDescription"
           plutil -p Payload/DailyOS.app/Info.plist | grep -q "NSCalendarsFullAccessUsageDescription"
@@ -96,7 +97,7 @@ jobs:
           fi
           echo "OK: DailyOS and DailyOSWidgets versions match (${APP_SHORT} b${APP_VER})"
 
-          echo "=== Verifying v3.6 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
+          echo "=== Verifying v4.0 Symbols in Mach-O Binary (UTF-8 & UTF-16LE, Case-Insensitive) ==="
           python3 - <<'EOF'
           from pathlib import Path
           import sys
@@ -116,8 +117,8 @@ jobs:
               "Preview Solar-Orange Wake Screen",
               "Daily Notifications",
               "Main Character Morning",
-              "Take cold shower",
-              "Review tomorrow's plan",
+              "Weekly Winter Arc Recap",
+              "gemini-3.5-flash-lite",
           ]
           forbidden = [
               "AI Camera Pushups",
@@ -125,7 +126,7 @@ jobs:
 
           for item in required:
               if not has_string(item):
-                  print(f"ERROR: Missing expected v3.6 string in binary: {item}")
+                  print(f"ERROR: Missing expected v4.0 string in binary: {item}")
                   sys.exit(1)
               print(f"OK (found): {item}")
 

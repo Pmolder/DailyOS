@@ -535,6 +535,7 @@ private struct TodayScoreHeroCard: View {
 
             if isExpanded {
                 ZStack {
+                    AmbientBreathingGlow(color: ringColor, diameter: 215)
                     AmbientBloomRing(
                         progress: Double(summary.score) / 100.0,
                         color: ringColor,
@@ -554,6 +555,7 @@ private struct TodayScoreHeroCard: View {
                     }
                 }
                 .padding(.vertical, 2)
+                .transition(.midnightReveal)
 
                 Text(summary.headline)
                     .font(.system(size: 21, weight: .bold, design: .rounded))
